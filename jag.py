@@ -9,6 +9,7 @@ class jag_server:
 		self._fatal_err_msg = '$JAG_FATAL_ERR_MSG$'
 		self._regular_err_msg = '$JAG_REGULAR_ERR_MSG$'
 		self._jtw_no_action_reason = '$JAG_JATEWAY_ACTION_NOT_FOUND_MSG$'
+		self._xfiles_hname = '$JAG_X_FILES_HNAME$'
 
 		self.response_content_type = 'application/octet-stream'
 
@@ -157,7 +158,7 @@ class jag_server:
 
 		self.output('Content-Type: application/octet-stream\r\n'.encode())
 		self.output(f"""Content-Disposition: attachment; filename="{str(flname)}"\r\n""".encode())
-		self.output(f"""X-Sendfile: {str(floc)}\r\n\r\n""".encode())
+		self.output(f"""{self._xfiles_hname}: {str(floc)}\r\n\r\n""".encode())
 
 		self.sys.stdout.buffer.flush()
 		self.sys.stdout.flush()
@@ -173,7 +174,10 @@ class jag_server:
 
 
 class jateway:
-	"""Actions"""
+	"""
+	This gateway allows executing functions through a proxy
+	to properly catch errors and report them to the client
+	"""
 	def __init__(self, srv, registry={}):
 		self.reg = registry
 		self.srv = srv
