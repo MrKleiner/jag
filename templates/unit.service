@@ -1,0 +1,17 @@
+[Unit]
+Description=$JAG_SERVICENAME$
+After=network.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=1
+# User=root
+PIDFile=/run/lighttpd_$JAG_SERVICENAME$.pid
+# WorkingDirectory=/home/heavy/cinemads/server
+ExecStartPre=lighttpd -tt -f $JAG_CFGLOC$/server_prms.conf
+ExecStart=lighttpd -D -f $JAG_CFGLOC$/server_prms.conf
+ExecReload=/bin/kill -USR1 $MAINPID
+
+[Install]
+WantedBy=multi-user.target
