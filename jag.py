@@ -6,10 +6,11 @@ class jag_server:
 		import os, json, platform
 		from pathlib import Path
 
-		self._fatal_err_msg = '$JAG_FATAL_ERR_MSG$'
-		self._regular_err_msg = '$JAG_REGULAR_ERR_MSG$'
-		self._jtw_no_action_reason = '$JAG_JATEWAY_ACTION_NOT_FOUND_MSG$'
-		self._xfiles_hname = '$JAG_X_FILES_HNAME$'
+		self._fatal_err_msg =         """$JAG_FATAL_ERR_MSG$"""
+		self._regular_err_msg =       """$JAG_REGULAR_ERR_MSG$"""
+		self._jtw_no_action_reason =  """$JAG_JATEWAY_ACTION_NOT_FOUND_MSG$"""
+		self._xfiles_hname =          """$JAG_X_FILES_HNAME$"""
+		self._action_url_param_name = """$JAG_ACT_URL_PRM_NAME$"""
 
 		self.response_content_type = 'application/octet-stream'
 
@@ -17,14 +18,12 @@ class jag_server:
 		# traceback messages
 		cgitb.enable(format='text')
 
+		# don't import modules many times...
 		self.cgitb = cgitb
-
-		# don't append modules many times...
 		self.Path = Path
 		self.json = json
-
-		# input sys module
 		self.sys = sys
+		self.os = os
 
 		self.output = sys.stdout.buffer.write
 
@@ -44,6 +43,11 @@ class jag_server:
 			# print(hd, os.environ[hd], '\n')
 			if hd.startswith('HTTP_'):
 				self.headers[hd.replace('HTTP_', '').lower()] = os.environ[hd]
+
+		# get cookies
+		# important todo: is it really neccessary to postpone cookie evaluation ?
+		self._cookies = None
+		self._outp_cookies = {}
 
 
 		# read body content, if any
@@ -71,6 +75,20 @@ class jag_server:
 
 	def bin_as_json(self):
 		return self.json.loads(self.bin)
+
+
+	@property
+	def cookies(self):
+		if self._cookies:
+			return self._cookies
+
+		for cookie in self.os.environ['HTTP_COOKIE'].split(';'):
+			csplit = cookie.split('=')
+			self._cookies[csplit[0]] = '='.join(csplit[1:])
+
+
+	def set_cookie(self, cname, cval):
+		self._outp_cookies[cname] = cval
 
 
 	# @property
@@ -109,6 +127,11 @@ class jag_server:
 
 			# todo: what if either key/value has \r\n in it ?
 			self.output(f'{h}: {self.response_headers[h]}\r\n'.encode())
+
+		# add cookies
+		for biscuit in self._outp_cookies:
+			self.output(f"""Set-Cookie: {biscuit}={self._outp_cookies[biscuit]}\r\n""".encode())
+
 		# content type
 		self.output(f'Content-Type: {self.response_content_type}\r\n\r\n'.encode())
 		# buffer
@@ -181,9 +204,11 @@ class jateway:
 	def __init__(self, srv, registry={}):
 		self.reg = registry
 		self.srv = srv
-		self.action = self.srv.prms.get('action')
+		self.action = self.srv.prms.get(self.srv._action_url_param_name)
 
-	def eval_action(self):
+		self._eval_action()
+
+	def _eval_action(self):
 		try:
 			# if action from url params is in the registry then execute
 			if self.action in self.reg:
@@ -215,7 +240,8 @@ class jateway:
 			raise e
 
 
-
+	def eval_action(self):
+		return True
 
 
 
