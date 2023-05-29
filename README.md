@@ -1,2 +1,2 @@
 # jag
-Simple yet useful python server gateway
+Simple cgi toolset

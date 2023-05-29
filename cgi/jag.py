@@ -154,7 +154,7 @@ class jag_server:
 	# expects bytes
 	def bin_write(self, dat):
 		if not isinstance(dat, bytes):
-			raise Exception('Cant add anything besides bytes to output buffer')
+			raise Exception('Jag: Cant add anything besides bytes to output buffer')
 
 		self.sv_buffer += dat
 
@@ -164,15 +164,15 @@ class jag_server:
 
 
 	# spit file
-	def x_files(self, flpath, flname):
+	def x_files(self, flpath=None, flname=None):
 
 		if not flpath or not flname:
-			raise Exception('x_files transfer: one of the arguments is completely invalid')
+			raise Exception('Jag: x_files transfer: one of the arguments is completely invalid')
 
 		floc = self.Path(flpath)
 
 		if not floc.is_file():
-			raise Exception('x_files transfer: file path does not exist')
+			raise Exception('Jag: x_files transfer: file path does not exist')
 
 		# src from hello.py:
 		# sys.stdout.write(b'Content-Type: application/octet-stream\r\n')
