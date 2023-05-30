@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+	<head>
+		<meta charset="UTF-8">
+		<title>Toolbox Documentation</title>
+	</head>
+
+	<body>
+		<div class="section">
+			<h1><func-path>String.prototype.</func-path><func>capitalize</func></h1>
+			<div class="section_description">Convert the first letter of a string into upper case</div>
+			<func-input>'lizards'.capitalize()</func-input>
+			<func-output>'Lizards'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>String.prototype.</func-path><func>lower / upper</func></h1>
+			<div class="section_description">A Python shortcut for toLowerCase() and toLowerCase()</div>
+			<func-input>'lizards'.upper()</func-input>
+			<func-output>'LIZARDS'</func-output>
+			<drop></drop>
+			<func-input>'LIZARDS'.lower()</func-input>
+			<func-output>'lizards'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>String.prototype.</func-path><func>rstrip / lstrip / strip</func></h1>
+			<div class="section_description">Python functions lstrip/rstrip/strip</div>
+			<div class="section_description">Takes one argument: Which character to strip from the borders of the string</div>
+			<func-input>'/lizards/'.strip('/')</func-input>
+			<func-output>'lizards'</func-output>
+			<drop></drop>
+			<func-input>'/lizards/'.rstrip('/')</func-input>
+			<func-output>'/lizards'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.</func-path><func>str()</func></h1>
+			<div class="section_description">Python-like str(). Can take anything as an input and returns a string</div>
+			<func-input>str(65535)</func-input>
+			<func-output>'65535'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.</func-path><func>int()</func></h1>
+			<div class="section_description">Python-like int(). Can take anything as an input and tries to evaulate an int</div>
+			<func-input>int('65535')</func-input>
+			<func-output>65535</func-output>
+			<drop></drop>
+			<func-input>int(3.14)</func-input>
+			<func-output>3</func-output>
+			<drop></drop>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.</func-path><func>float()</func></h1>
+			<div class="section_description">Python-like float(). Can take anything as an input and tries to evaulate a float</div>
+			<func-input>float('65535')</func-input>
+			<func-output>65535.0</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.</func-path><func>len()</func></h1>
+			<div class="section_description">Python-like len(). Can take anything as an input and tries to evaulate a length of the object</div>
+			<func-input>len('lizards')</func-input>
+			<func-output>7</func-output>
+			<drop></drop>
+
+			<func-input>len({'iguana': 'reptile', 'carp': 'fish'})</func-input>
+			<func-output>2</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.</func-path><func>range()</func></h1>
+			<div class="section_description">Python-like range(). Generator function. It's very important to use of and not in</div>
+			<ul>
+				<li>Start: 0.</li>
+				<li>Stop: null (use start as amount)</li>
+				<li>Step: 1. Increase the output number by this amount</li>
+			</ul>
+
+			<func-input>for (let idx of range(3)){ console.log(idx) }</func-input>
+			<func-output>0</func-output>
+			<func-output>1</func-output>
+			<func-output>2</func-output>
+			<drop></drop>
+			<func-input>for (let idx of range(3, 6)){ console.log(idx) }</func-input>
+			<func-output>3</func-output>
+			<func-output>4</func-output>
+			<func-output>5</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>Number.</func-path><func>clamp</func></h1>
+			<div class="section_description">Clamp a number to a range</div>
+			<ul>
+				<li>Lower Bound</li>
+				<li>Upper Bound</li>
+			</ul>
+			<func-input>65535.clamp(0, 4096)</func-input>
+			<func-output>4096</func-output>
+			<drop></drop>
+			<func-input>-128.clamp(0, 4096)</func-input>
+			<func-output>0</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>Math.</func-path><func>isEven</func></h1>
+			<div class="section_description">Check whether a number is isEven or not</div>
+			<func-input>8.isEven()</func-input>
+			<func-output>true</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>Math.</func-path><func>isOdd</func></h1>
+			<div class="section_description">Check whether a number is Odd or not</div>
+			<func-input>5.isOdd()</func-input>
+			<func-output>true</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>URL.</func-path><func>target</func></h1>
+			<div class="section_description">Small improvements to the URL class</div>
+			<func-input>const super_url = new URL('https://docs.blender.org/manual/en/latest/index.gz.html')</func-input>
+			<func-input>super_url.target.name</func-input>
+			<func-output>'index.gz.html'</func-output>
+			<drop></drop>
+			<func-input>super_url.target.suffix</func-input>
+			<func-output>'html'</func-output>
+			<drop></drop>
+			<func-input>super_url.target.stem</func-input>
+			<func-output>'index.gz'</func-output>
+			<drop></drop>
+			<func-input>super_url.target.stem_raw</func-input>
+			<func-output>'index'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>window.localStorage.</func-path><func>getObject | getObj</func></h1>
+			<div class="section_description">Get an item from local storage as JSON</div>
+			<ul>
+				<li>Key</li>
+			</ul>
+		</div>
+		<div class="section">
+			<h1><func-path>window.localStorage.</func-path><func>setObject | setObj</func></h1>
+			<div class="section_description">Dump object as json string into local storage</div>
+			<ul>
+				<li>Key</li>
+				<li>Value</li>
+			</ul>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>find_objects</func></h1>
+			<div class="section_description">Find objects inside an object via given query</div>
+			<ul>
+				<li>Object</li>
+				<li>Key</li>
+				<li>Value</li>
+			</ul>
+			
+			<func-input>var js = {"glossary":{"title":"example glossary","GlossDiv":{"title":"S","GlossList":{"GlossEntry":{"ID":"SGML","SortAs":"SGML","GlossTerm":"Standard Generalized Markup Language","Acronym":"SGML","Abbrev":"ISO 8879:1986","GlossDef":{"para":"A meta-markup language, used to create markup languages such as DocBook.","ID":"44","str":"SGML","GlossSeeAlso":["GML","XML"]},"GlossSee":"markup"}}}}};</func-input>
+			<drop></drop>
+			<div class="section_description">Get objects by key and value</div>
+			<func-input>lizard.find_objects(js,'ID','SGML')</func-input>
+			<drop></drop>
+			<div class="section_description">Get objects by value</div>
+			<func-input>lizard.find_objects(js,'','SGML')</func-input>
+			<drop></drop>
+			<div class="section_description">Get objects by key</div>
+			<func-input>lizard.find_objects(js,'ID','')</func-input>
+		</div>
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>find_values</func></h1>
+			<div class="section_description">Get an array of values that match on a certain key</div>
+			<ul>
+				<li>Object</li>
+				<li>Key</li>
+			</ul>
+			<drop></drop>
+			<div class="section_description">example of grabbing values from any key passed in JSON</div>
+			<func-input>lizard.find_values(js,'ID')</func-input>
+			<func-output>["SGML", "44"] </func-output>
+		</div>
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>find_keys</func></h1>
+			<div class="section_description">return an array of keys that match on a certain value</div>
+			<ul>
+				<li>Object</li>
+				<li>Key</li>
+			</ul>
+			<drop></drop>
+			<div class="section_description">example of grabbing keys by searching via values in JSON</div>
+			<func-input>lizard.find_keys(js,'SGML')</func-input>
+			<func-output>["ID", "SortAs", "Acronym", "str"]</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>rndwave</func></h1>
+			<div class="section_description">Generate a random string or number</div>
+			<ul>
+				<li>Length: 8. Length of the output string</li>
+				<li>Method: 'def'. Choose a predefined character set</li>
+				<ul>
+					<li>def: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-'</li>
+					<li>flac: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-()=+*#/!&?<>$~'</li>
+					<li>num: '1234567890'</li>
+				</ul>
+				<li>Addchars: ''. Additional characters to use. The input is converted to string and split into characters</li>
+				<li>Crypto: true. True = generate better results with window.crypto at the cost of 50% decrease in performance</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.rndwave(20)</func-input>
+			<func-output>'r87a9WosskQ9EFmrHAOZ'</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>rnd_interval</func></h1>
+			<div class="section_description">Get a random number from within a range</div>
+			<ul>
+				<li>min: The minimum number</li>
+				<li>max: The maximum number</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.rnd_interval(17, 23)</func-input>
+			<func-output>19</func-output>
+		</div>
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>rnd_int_fixed</func></h1>
+			<div class="section_description">Generate a random Integer of a fixed length. Warning: Integers longer than 19 characters are returned in a form of a string</div>
+			<ul>
+				<li>Length: 3. Length of the output integer</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.rnd_int_fixed(5)</func-input>
+			<func-output>39286</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>isDict</func></h1>
+			<div class="section_description">Check whether the provided object is a dict or not</div>
+			<ul>
+				<li>Object</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.isDict({'a': 'b'})</func-input>
+			<func-output>true</func-output>
+
+			<func-input>lizard.isDict(['a', 'b'])</func-input>
+			<func-output>false</func-output>
+		</div>
+
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>copytext</func></h1>
+			<div class="section_description">Copy text to ctrl+c</div>
+			<ul>
+				<li>String</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.copytext('sometext')</func-input>
+			<func-output>null</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>rgb2hex</func></h1>
+			<div class="section_description">Convert css rgb() to hex</div>
+			<ul>
+				<li>RGB Value</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.rgb2hex('rgb(88, 187, 126)')</func-input>
+			<func-output>'#58bb7e'</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.base64.</func-path><func>b64encode</func></h1>
+			<div class="section_description">Encode a UTF8 Array to string</div>
+			<ul>
+				<li>TypedArray | ArrayBuffer | Array</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.base64.b64encode([112, 111, 111, 116, 105, 115])</func-input>
+			<func-output>'cG9vdGlz'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>lizard.base64.</func-path><func>b64decode</func></h1>
+			<div class="section_description">Decode a base64 string to UTF8 Array</div>
+			<ul>
+				<li>String</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.base64.b64encode('cG9vdGlz')</func-input>
+			<func-output>'pootis</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>String.prototype.</func-path><func>encode</func></h1>
+			<div class="section_description">Encode a string to UTF8 Array</div>
+			<drop></drop>
+			<func-input>'pootis'.encode()</func-input>
+			<func-output>Uint8Array([112, 111, 111, 116, 105, 115])</func-output>
+		</div>
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>btoa</func></h1>
+			<div class="section_description">Properly ENcode a string to base64</div>
+			<ul>
+				<li>String</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.btoa('pootis')</func-input>
+			<func-output>'cG9vdGlz'</func-output>
+		</div>
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>atob</func></h1>
+			<div class="section_description">Properly DEcode a base64 string back to normal string</div>
+			<ul>
+				<li>String</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.atob('cG9vdGlz')</func-input>
+			<func-output>'pootis'</func-output>
+		</div>
+
+<!-- 		<div class="section">
+			<h1><func-path>Array.prototype.</func-path><func>rmdupli</func></h1>
+			<div class="section_description">Remove duplicates from the given array</div>
+			<drop></drop>
+			<func-input>['a', 'a'].rmdupli()</func-input>
+			<func-output>['a']</func-output>
+		</div> -->
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>wait_elem</func></h1>
+			<div class="section_description">
+				Wait for a certain selector to appear on the page (useful for writing custom scripts for websites)<br>
+				First you have to create the control object:
+			</div>
+			<ul>
+				<li>Selector: css selector, like '.inner_content #channel_section'</li>
+				<li>Identifier: an id to identify this task in a global pool of similar ones</li>
+			</ul>
+			<drop></drop>
+			<func-input>var load_waiter = lizard.wait_elem('.inner_content #channel_section', 'pg_init_wait')</func-input>
+			<div class="section_description">Returns a control object with the following methods:</div>
+			<ul>
+				<li>wait: returns a Promise resolved after the required element appears on the page</li>
+				<li>abort: stop waiting for this element</li>
+			</ul>
+		</div>
+
+
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>delnthelem</func></h1>
+			<div class="section_description">Delete nth element from an Array | String</div>
+			<ul>
+				<li>Input object</li>
+				<li>Nth</li>
+				<li>Use: If set to true, will return every nth element. If set to false (default) or null, will return an object with every nth element deleted</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.delnthchar('pootis', 2)</func-input>
+			<func-output>'poi'</func-output>
+
+			<func-input>lizard.delnthchar('pootis', 2, true)</func-input>
+			<func-output>'ots'</func-output>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.cookies.</func-path><func>set</func></h1>
+			<div class="section_description">Set a cookie</div>
+			<ul>
+				<li>Cookie name</li>
+				<li>Cookie value</li>
+				<li>Days till expired</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.cookies.set('pootis', 'sandwich', 37)</func-input>
+		</div>
+
+
+
+		<div class="section">
+			<h1><func-path>lizard.cookies.</func-path><func>get</func></h1>
+			<div class="section_description">Get a cookie</div>
+			<ul>
+				<li>Cookie name</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.cookies.get('pootis')</func-input>
+			<func-output>'sandwich'</func-output>
+		</div>
+
+<!-- 
+		<div class="section">
+			<h1><func-path>lizard.</func-path><func>b64toblob</func></h1>
+			<div class="section_description">Convert a base64 string to blob URL</div>
+			<ul>
+				<li>Base64 string</li>
+			</ul>
+			<drop></drop>
+			<func-input>lizard.b64toblob('data:text/plain;base64,cG9vdGlz')</func-input>
+			<func-output>'blob:https://www.google.com/1237106b-f0e7-4991-b774-efbfe79858d4'</func-output>
+		</div>
+ -->
+
+ 		<div class="section">
+			<h1><func-path>lizard.</func-path><func>compare_arrays</func></h1>
+			<div class="section_description">Check whether 2 arrays are identical. Useful for comparing buffers</div>
+			<ul>
+				<li>Array 1</li>
+				<li>Array 2</li>
+				<li>Return difference: Boolean. Return the items that are not similar</li>
+			</ul>
+		</div>
+
+
+
+	</body>
+	<style type="text/css">
+		html{
+			background: #18181A;
+			color: white;
+			/*font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif,'Apple Color Emoji','Segoe UI Emoji';*/
+			font-family: monospace;
+		}
+		func-path{
+			font-weight: 200;
+			color: rgba(255, 255, 255, 0.5);
+		}
+		.section_description{
+			font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif,'Apple Color Emoji','Segoe UI Emoji';
+			margin: 5px 0px 5px 0px;
+		}
+		func-input, func-output{
+			display: block;
+			position: relative;
+			padding-left: 20px;
+			font-family: monospace;
+			margin-left: 10px;
+		}
+		func-input::before{
+			content: '>';
+			position: absolute;
+			height: 100%;
+			left: 0px;
+			/*text-align: center;*/
+			/*vertical-align: middle;*/
+			font-style: bold;
+			color: #ADB7CF;
+		}
+		func-output::before{
+			content: '<⦁';
+			position: absolute;
+			height: 100%;
+			left: 0px;
+			/*text-align: center;*/
+			/*vertical-align: middle;*/
+			font-style: bold;
+			color: #ADB7CF;
+		}
+		drop{
+			display: block;
+			margin-top: 10px;
+		}
+
+	</style>
+</html>

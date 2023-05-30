@@ -1,3 +1,4 @@
+from jag_util import dict_pretty_print
 
 _room_echo = '[Request Evaluator]'
 
@@ -6,34 +7,129 @@ _rebind = print
 def print(*args):
 	_rebind(_room_echo, *args)
 
-def dict_pretty_print(d):
-	sex = '\n'
-	for key in d:
-		sex += f"""{('>' + str(key) + '<').ljust(30)} :: >{str(d[key])}<""" + '\n'
 
-	print(sex)
+
+def request_default_action(req):
+	print('Executing default action', req.path)
+
+	# fisrt of all check if path explicitly points to a file
+	if req.path.is_file():
+		# then, check if it's actually inside the docroot
+		if not req.path.resolve().is_relative_to(req.server['doc_root']):
+			req.reject()
+			return
+
+		# all good - set content type send the shit
+		req.response.content_type = (
+			req.server['cache']['mimes']['base_mimes_signed'][req.path.suffix]
+			or
+			'application/octet-stream'
+		)
+		req.response.flush(req.path.read_bytes())
+		return
+
+
+	# if it's not a file - check whether the target dir has an .html file
+	if (req.path / 'index.html').is_file():
+		req.response.content_type = 'text/html'
+		req.response.flush((req.path / 'index.html').read_bytes())
+		return
+
+	# othrwise - reject
+	req.reject()
+
+
+
+class response:
+	def __init__(self, req, con, server):
+		self.request = req
+		self.con = con
+		self.server = server
+		self.headers = {
+			'Server': 'Jag',
+		}
+
+		self.content_type = 'application/octet-stream'
+		self.code = 200
+
+	# dump headers and response code to the client
+	def send_preflight(self):
+		"""
+		Dump headers to the client
+		"""
+		import io
+		buf = io.BytesIO()
+
+		# response code
+		buf.write(f"""HTTP/1.1 {self.server['cache']['response_codes'][self.code]}\r\n""".encode())
+
+		# important todo: better way of achieving this
+		self.headers['Content-Type'] = self.content_type
+
+		# headers
+		for header_name, header_value in self.headers.items():
+			buf.write(f"""{header_name}: {header_value}\r\n""".encode())
+
+		# end
+		buf.write('\r\n'.encode())
+
+		# send to the client
+		self.con.sendall(buf.getvalue())
+
+		# important todo: There's a built-in way to make function fire only once
+		self.send_preflight = lambda: None
+
+
+	# mark response as a download
+	def mark_as_xfiles(self, filename):
+		"""
+		This is needed if you want the response body to be treated
+		as a file download
+		"""
+		self.headers['Content-Disposition'] = f'attachment; filename="{str(filename)}"'
+
+
+	# send complete response and close the connection, obviously
+	def flush(self, data):
+		if not isinstance(data, bytes):
+			data = data.getvalue()
+
+		# important todo: the response should either be chunked or have Content-Length header
+		self.headers['Content-Length'] = len(data)
+
+		# send headers
+		self.send_preflight()
+
+		# send the body
+		self.con.sendall(data)
+
+		# terminate
+		self.request.terminate()
+
+
+
 
 
 class incoming_request:
-	def __init__(self, con, address, server_cache=None):
+	def __init__(self, con, address, server):
 		import time, hashlib, json, io, sys, traceback
 
 		self.con = con
 		self.client_addr = address
-		self.server_cache = server_cache
+		self.server = server
 		self.info = {}
 		self.headers = {}
+
+		self.response = response(self, con, server)
+
 		print('Initialized basic room')
 
-		try:
-			self._eval_request()
-		except Exception as e:
-			print( "EXCEPTION TRACE PRINT:\n{}".format( "".join(traceback.format_exception(type(e), e, e.__traceback__))))
-			raise e
+		self._eval_request()
 
 
 	def _eval_request(self):
 		import time, hashlib, json, io, sys, traceback
+		from pathlib import Path
 
 		# todo: move this to a shared place
 		_hshake_end = (b'\r\n\r\n', b'\n\n')
@@ -73,22 +169,13 @@ class incoming_request:
 		# Evaluate the request
 		# 
 
-		# GET /sex/po%20otis/sandwich.jpeg HTTP/1.1
-		# -Host: 192.168.0.10:56817
-		# Connection: keep-alive
-		# Pragma: no-cache
-		# Cache-Control: no-cache
-		# Upgrade-Insecure-Requests: 1
-		# User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36
-		# Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
-		# Accept-Encoding: gzip, deflate
-		# Accept-Language: en-US,en;q=0.9
-		# Cookie: sex=ded; aaa=bbb !CAN BE ABSENT
-
 		# First line is always the request protocol, path and http version
 		# It's up to the client to send valid data
 		self.type, self.path, self.protocol = request_info[0].split(' ')
 		print(self.type, self.path, self.protocol)
+
+		# evaluate path
+		self.path = self.server['doc_root'] / Path(self.path.lstrip('/'))
 
 		# Delete the first line as it's not needed anymore
 		del request_info[0]
@@ -146,43 +233,41 @@ class incoming_request:
 		# Dump the rest into a dict
 		self.headers = request_dict
 
-		dict_pretty_print(cookie_dict)
+		if 'cookie' in request_dict:
+			dict_pretty_print(cookie_dict)
 		print('')
 		dict_pretty_print(self.info)
 
 
-	def _test(self):
-		from pathlib import Path
+	def exec_default_action(self):
+		request_default_action(self)
 
-		pootis = Path(r"E:\!webdesign\jag\test\bottom_gear.png")
 
-		rsp = b''
+	def terminate(self):
+		import socket
+		self.con.shutdown(socket.SHUT_RDWR)
+		self.con.close()
 
-		rsp += b'HTTP/1.1 200 OK' + b'\r\n'
-		# rsp += b'Transfer-Encoding: chunked' + b'\r\n'
-		rsp += b'Content-Type: ' + self.server_cache['mimes']['base_mimes_signed'][pootis.suffix].encode() + b'\r\n'
 
-		nen = pootis.read_bytes()
-
-		rsp += b'Content-Length: ' + str(len(nen)).encode() + b'\r\n\r\n'
-
-		rsp += nen
-
-		self.con.sendall(rsp)
-
+	def reject(self, code=401):
+		self.response.code = code
+		self.response.content_type = 'text/html'
+		self.response.flush(
+			self.server['cache']['assets']['html']['default_reject']
+			.replace(b'$$reason', self.server['cache']['response_codes'][code].encode())
+		)
 
 
 
-
-def base_room(con, address, server_cache=None):
+def base_room(con, address, server):
 	import time, hashlib, json, io, sys, traceback
 	"""
 	Basic room for handling incoming requests.
 	Serves basic purpose like responding with images and html pages.
 	"""
 	try:
-		sex = incoming_request(con, address, server_cache)
-		sex._test()
+		sex = incoming_request(con, address, server)
+		sex.exec_default_action()
 		con.close()
 		sys.exit()
 	except Exception as e:

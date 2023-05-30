@@ -1,0 +1,41 @@
+
+======= regular request example =======
+
+GET /sex/po%20otis/sandwich.jpeg HTTP/1.1
+-Host: 192.168.0.10:56817
+Connection: keep-alive
+Pragma: no-cache
+Cache-Control: no-cache
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+Accept-Encoding: gzip, deflate
+Accept-Language: en-US,en;q=0.9
+Cookie: sex=ded; aaa=bbb !CAN BE ABSENT
+
+
+
+
+======= regular chunked response example =======
+
+HTTP/1.1 200 OK
+Date: Tue, 30 May 2023 22:41:14 GMT
+Expires: -1
+Cache-Control: private, max-age=0
+Content-Type: text/html; charset=ISO-8859-1
+Content-Security-Policy-Report-Only: object-src 'none';base-uri 'self';script-src 'nonce-51dpKTyp3VUBUYl-8bE7Bw' 'strict-dynamic' 'report-sample' 'unsafe-eval' 'unsafe-inline' https: http:;report-uri https://csp.withgoogle.com/csp/gws/other-hp
+P3P: CP="This is not a P3P policy! See g.co/p3phelp for more info."
+Server: gws
+X-XSS-Protection: 0
+X-Frame-Options: SAMEORIGIN
+Set-Cookie: SOCS=CAAaBgiA-dSjBg; expires=Fri, 28-Jun-2024 22:41:14 GMT; path=/; domain=.google.com; Secure; SameSite=lax< Set-Cookie: AEC=AUEFqZcDN37swUIT-NRUj5KdbCQCNeHXiTl_2Z_hXdpfabQlW8WqEnXfVr4; expires=Sun, 26-Nov-2023 22:41:14 GMT; path=/; domain=.google.com; Secure; HttpOnly; SameSite=lax
+Set-Cookie: AEC=AUEFqZcDN37swUIT-NRUj5KdbCQCNeHXiTl_2Z_hXdpfabQlW8WqEnXfVr4; expires=Sun, 26-Nov-2023 22:41:14 GMT; path=/; domain=.google.com; Secure; HttpOnly; SameSite=lax
+Set-Cookie: __Secure-ENID=12.SE=Fh3baKjBT97eCMrIHh-zSwSdnAY1YGXEdcNUB-57e5agLkitNL-7PG25_UUmDY0nyLka_4LIQp_hW4wAQUaLJaG17E74im164OmEdNSB7ej-EI_bgqTEhvobu9h9vTfiZ0VvCzd6rcGRXcU1vmHeHMkANZ_FrGopiA2VilvK0pQ; expires=Sat, 29-Jun-2024 14:59:32 GMT; path=/; domain=.google.com; Secure; HttpOnly; SameSite=lax
+Set-Cookie: CONSENT=PENDING+540; expires=Thu, 29-May-2025 22:41:14 GMT; path=/; domain=.google.com; Secure
+Alt-Svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+Accept-Ranges: none
+Vary: Accept-Encoding
+Transfer-Encoding: chunked
+
+3256
+<!doctype html>...
