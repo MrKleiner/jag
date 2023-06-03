@@ -9,19 +9,21 @@ def print(*args):
 
 
 
+
 def request_default_action(req):
+	from pathlib import Path
 	print('Executing default action', req.path)
+
+	# anything that is not inside the server shall get rejected
+	if not req.path.resolve().is_relative_to(req.server['doc_root']):
+		req.reject()
+		return
 
 	# fisrt of all check if path explicitly points to a file
 	if req.path.is_file():
-		# then, check if it's actually inside the docroot
-		if not req.path.resolve().is_relative_to(req.server['doc_root']):
-			req.reject()
-			return
-
 		# all good - set content type send the shit
 		req.response.content_type = (
-			req.server['cache']['mimes']['base_mimes_signed'][req.path.suffix]
+			req.server['cache']['mimes']['base_mimes_signed'].get(req.path.suffix)
 			or
 			'application/octet-stream'
 		)
@@ -29,14 +31,32 @@ def request_default_action(req):
 		return
 
 
-	# if it's not a file - check whether the target dir has an .html file
+	# if it's not a file - check whether the target dir has an index.html file
 	if (req.path / 'index.html').is_file():
 		req.response.content_type = 'text/html'
 		req.response.flush((req.path / 'index.html').read_bytes())
 		return
 
-	# othrwise - reject
-	req.reject()
+	_test = Path(r"E:\!webdesign\jag\panzer\assets\dir_listing.html").read_bytes()
+
+	sex = ''
+
+	dirlist = list(req.path.glob('*'))
+	dirlist.sort(key=lambda a: a.name.lower())
+	dirlist.sort(key=lambda a: int(a.is_file()))
+
+	for entry in dirlist:
+		sex += f"""<a href="{entry.relative_to(req.server['doc_root'])}" {'file_entry' if entry.is_file() else 'dir_entry'} class="list_entry">{entry.name}</a>"""
+
+	_tested = _test.replace(b'$$pool', sex.encode())
+
+	req.response.content_type = 'text/html'
+	req.response.flush(_tested)
+
+	# list.sort(key=lambda a: a.lower())
+
+	# otherwise - reject
+	# req.reject()
 
 
 
@@ -257,8 +277,6 @@ class incoming_request:
 			.replace(b'$$reason', self.server['cache']['response_codes'][code].encode())
 		)
 
-
-
 def base_room(con, address, server):
 	import time, hashlib, json, io, sys, traceback
 	"""
@@ -273,5 +291,4 @@ def base_room(con, address, server):
 	except Exception as e:
 		print( "EXCEPTION TRACE PRINT:\n{}".format( "".join(traceback.format_exception(type(e), e, e.__traceback__))))
 		raise e
-
 

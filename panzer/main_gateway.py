@@ -58,7 +58,7 @@ def sock_server():
 	with multiprocessing.Pool() as pool:
 		while True:
 			print(_server_proc, 'Entering the main listen cycle which would spawn rooms upon incoming connection requests...')
-			# Try establishing connection, nothing below this line would get executed
+			# Try establishing connection, nothing below this line gets executed
 			# until server receives a new connection
 			conn, address = s.accept()
 			print(_server_proc, 'Got connection, spawning a room. Client info:', address)
