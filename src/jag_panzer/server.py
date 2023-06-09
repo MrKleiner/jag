@@ -205,9 +205,13 @@ def sock_server(sv_cfg):
 	port = server_resources.cfg['port']
 	# Create the Server object
 	s = socket.socket()
+
 	# Bind server to the specified port. 0 = Find the closest free port and run stuff on it
+	_get_ip_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	_get_ip_s.connect(('8.8.8.8', 0))
+	current_ip = _get_ip_s.getsockname()[0]
 	s.bind(
-		('192.168.0.10', port)
+		(current_ip, port)
 	)
 
 	# Basically launch the server

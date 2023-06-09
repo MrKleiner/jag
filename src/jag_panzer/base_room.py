@@ -59,6 +59,7 @@ class sv_services:
 
 		if not request.abspath.is_file():
 			self.request.reject()
+			return
 
 		# all good - set content type and send the shit
 		response.content_type = (
@@ -74,7 +75,8 @@ class sv_services:
 			with open(str(request.abspath), 'r+b') as f:
 				# if request comes with a Range header - try serving the requested byterange
 				# '0-' VERY funny, fuck right off
-				if request.byterange and request.headers['range'].strip() != '0-' and respect_range:
+				if request.byterange and (request.headers.get('range', 'bytes=0-').strip() != 'bytes=0-') and respect_range:
+					conlog('The client has fucked us over:', request.headers.get('range', '0-').strip())
 					response.serve_range(f)
 				else:
 					response.stream_buffer(f, (1024*1024)*5)
@@ -185,6 +187,8 @@ class sv_response:
 
 		self.content_type = 'application/octet-stream'
 		self.code = 200
+
+		self.offered_services = sv_services(self.request, self)
 
 	# dump headers and response code to the client
 	def send_preflight(self):
@@ -305,6 +309,8 @@ class sv_response:
 				_start = chunk_start
 				_end = chunk_end or buf_size
 
+				conlog('Serving partial content', self.request.byterange, _start, _end)
+
 				# If only end is specified - stream suffix
 				# Todo: current implementation requires calculating
 				# start offset, which means that buffer should be of known size
@@ -318,6 +324,8 @@ class sv_response:
 					if not data:
 						break
 					stream.send(data)
+
+		self.request.terminate()
 
 
 
@@ -369,6 +377,10 @@ class cl_request:
 		expect_r = False
 
 		# important todo: This is extremely (relatively) slow
+		# simple http server from python base library does something like
+		# do 1 byte receive from client till \r\n\r\n
+		# OR
+		# Read 65535 bytes and then process the thing
 		while True:
 			data = self.cl_con.recv(65535)
 			for idx, char in enumerate(data):
@@ -404,7 +416,7 @@ class cl_request:
 
 			if double_rn == 2:
 				conlog('Header Buf', self.head_buf.getvalue().decode())
-				conlog('Body Buf', self.body_buf.getvalue())
+				# conlog('Body Buf', self.body_buf.getvalue())
 				break
 
 			self.head_buf.write(data)
@@ -445,6 +457,7 @@ class cl_request:
 		decoded_url_path = urllib.parse.unquote(parsed_url.path)
 		self.abspath = self.srv_res.doc_root / Path(decoded_url_path.lstrip('/'))
 		self.relpath = Path(decoded_url_path.lstrip('/'))
+		self.trimpath = self.relpath
 
 		# Delete the first line as it's no longer needed
 		del header_data[0]
@@ -459,6 +472,8 @@ class cl_request:
 			request_dict[line_split[0].lower()] = ': '.join(line_split[1:])
 
 		dict_pretty_print(request_dict)
+
+		self.headers = request_dict
 
 
 	# Actions
@@ -483,6 +498,41 @@ class cl_request:
 			.replace(b'$$reason', self.srv_res.response_codes[code].encode())
 			.replace(b'$$hint', str(hint).encode())
 		)
+
+	# I cannot be bothered. Here, have *args and fuckoff
+	def match_path(self, action_dict, *args, trim_path=True):
+		"""
+		Sample set/list:
+		{
+			('/pootis/sandwich/dispenser', func_name1),
+			('/pootis',                    func_name2),
+		}
+		"""
+		comparator = '/' + self.relpath.as_posix()
+
+		for rpath, func in action_dict:
+			# print(rpath, 'startswith', )
+			if comparator.startswith(rpath):
+				if trim_path:
+					self.trimpath = self.srv_res.pylib.Path(comparator.lstrip(rpath))
+				return func(self, self.response, self.response.offered_services, *args)
+
+		# if no match was found - return false
+		return False
+
+
+	def read_body_stream(self):
+		content_length = int(self.headers['content-length'])
+		read_progress = self.body_buf.seek(0, 2)
+		yield self.body_buf.getvalue()
+		while True:
+			if read_progress >= content_length:
+				break
+			# todo: finetune this value
+			# or expose it in the config
+			received_data = self.cl_con.recv(65535)
+			yield received_data
+			read_progress += len(received_data)
 
 
 	# Utility
@@ -562,8 +612,8 @@ class cl_request:
 		self._byterange = []
 		for chunk in ranges:
 			chunk_split = chunk.strip().split('-')
-			rstart = int(chunk_split[0]) if chunk_split[0] else None
-			rend =   int(chunk_split[1]) if chunk_split[1] else None
+			rstart = max(int(chunk_split[0]) - 1, 0) if chunk_split[0] else None
+			rend =   max(int(chunk_split[1]) - 1, 0) if chunk_split[1] else None
 			self._byterange.append(
 				(rstart, rend)
 			)
@@ -596,7 +646,7 @@ def base_room(cl_con, cl_addr, srv_res):
 		conlog('Initialized basic room, evaluated request')
 
 		# Create service object
-		offered_services = sv_services(evaluated_request, evaluated_request.response)
+		# offered_services = sv_services(evaluated_request, evaluated_request.response)
 
 		# Now either pass the control to the room specified in the config
 		# or the default room
@@ -607,13 +657,13 @@ def base_room(cl_con, cl_addr, srv_res):
 			custom_func.main(
 				evaluated_request,
 				evaluated_request.response,
-				offered_services
+				evaluated_request.response.offered_services
 			)
 		else:
 			_default_room(
 				evaluated_request,
 				evaluated_request.response,
-				offered_services
+				evaluated_request.response.offered_services
 			)
 
 	except Exception as err:

@@ -4,35 +4,34 @@
 # I want to strangle the deranged creator of setup tools
 if __name__ == '__main__':
 	from pathlib import Path
+	from szipper import szip
 	import os, shutil, subprocess
 	os.system('cls')
 
 	thisdir = Path(__file__).parent
+	archiver = szip(thisdir / 'fuck_pypi' / '7z.exe')
 	
 	shutil.rmtree(thisdir / 'dist', ignore_errors=True)
 	shutil.rmtree(thisdir / 'src' / 'jag_panzer.egg-info', ignore_errors=True)
 
+	# delete all caches
 	for folder in (thisdir / 'src').rglob('*'):
 		if folder.name == '__pycache__':
 			shutil.rmtree(folder, ignore_errors=True)
-	# end
-	# 7z a -t7z archive.7z *.txt
 
-	cfg_file = (thisdir / 'setup.cfg').read_text()
-
-	for line in cfg_file.split('\n'):
-		if line.strip().startswith('version'):
-			ver = line.split('=')[-1].strip()
-
+	# Build the project
 	os.system('py -m build')
-	subprocess.run([
-		str(thisdir / 'fuck_pypi' / '7z.exe'),
-		'a',
-		'-tzip',
-		str(thisdir / 'dist' / f'jag_panzer-{ver}-py3-none-any.whl'),
+
+	# append data to the wheel file
+	archiver.pack(
 		f"""{str(thisdir / 'src')}\*""",
-		"""-xr!jag_panzer.egg-info""",
-	])
+		str([ver for ver in (thisdir / 'dist').glob('*.whl')][0]),
+		['jag_panzer.egg-info'],
+		open_as='zip',
+		append_data=True,
+	)
+
+	# Upload project to the pypi.org
 	os.system('py -m twine upload --repository pypi dist/*')
 
 
