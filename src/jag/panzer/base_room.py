@@ -104,7 +104,9 @@ class sv_services:
 			(self.request.abspath / 'index.html').read_bytes()
 		)
 
-
+	# Because why not
+	def default(self):
+		_default_room(self.request, self.response, self)
 
 
 
@@ -435,6 +437,7 @@ class cl_request:
 		# deconstruct the url into components
 		parsed_url = urllib.parse.urlparse(self.path)
 
+		# important todo: lazy processing
 		# first - evaluate query params
 		self.query_params = {k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
 
@@ -581,6 +584,7 @@ class cl_request:
 # Some of its default services
 def base_room(cl_con, cl_addr, srv_res):
 	import sys, traceback
+	import importlib.util
 
 	try:
 		# precache some commonly-used python libraries
@@ -596,13 +600,21 @@ def base_room(cl_con, cl_addr, srv_res):
 
 		# Now either pass the control to the room specified in the config
 		# or the default room
-		# if srv_res.cfg['room_file']:
-		# 	pass
-		_default_room(
-			evaluated_request,
-			evaluated_request.response,
-			offered_services
-		)
+		if srv_res.cfg['room_file']:
+			spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
+			custom_func = importlib.util.module_from_spec(spec)
+			spec.loader.exec_module(custom_func)
+			custom_func.main(
+				evaluated_request,
+				evaluated_request.response,
+				offered_services
+			)
+		else:
+			_default_room(
+				evaluated_request,
+				evaluated_request.response,
+				offered_services
+			)
 
 	except Exception as err:
 		conlog(

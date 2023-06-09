@@ -1,0 +1,17 @@
+Metadata-Version: 2.1
+Name: jag-panzer
+Version: 0.0.3
+Summary: Simple HTTP server allowing pure python workflow
+Home-page: https://github.com/MrKleiner/jag
+Author: Mr.Kleiner
+Author-email: megaadrenaline1055@gmail.com
+Project-URL: Bug Tracker, https://github.com/MrKleiner/jag/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# jag
+Simple http server.

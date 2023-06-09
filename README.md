@@ -1,2 +1,2 @@
 # jag
-Simple cgi toolset
+Simple http server.

@@ -63,8 +63,6 @@ class dirlist:
 		# sort by type (folder/file)
 		dirlist.sort(key=lambda a: int(a.is_file()))
 
-		# print('Listing directory', tgt_dir)
-		# print('Listing directory sorted', dirlist)
 
 		# yield listed entries one by one
 		# in a form of html

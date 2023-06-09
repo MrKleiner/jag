@@ -2,25 +2,27 @@
 
 
 
-class wtest:
-	def __init__(self, smth, more):
-		self.smth = smth
-		self.more = more
-
-	def __enter__(self):
-		print('entering')
-		return self
-
-	def __exit__(self, type, value, traceback):
-		print('exiting')
-
-	def act_dance(self):
-		print('Acting...', self.smth, self.more)
 
 
-def proxy_attack(pootis):
-	return wtest('AUTOMATIC', pootis)
 
 
-with proxy_attack('MANUAL') as nen:
-	nen.act_dance()
+
+def main(request, response, services):
+	Path = request.srv_res.pylib.Path
+
+	if request.relative_to()
+
+
+
+
+if __name__ == '__main__':
+	from panzer.server import server_process
+
+	server_process({
+		'doc_root': r'E:\!webdesign\jag',
+		'port': 56817,
+		'room_file': __file__,
+		'dir_listing': {
+			'enabled': True,
+		}
+	})

@@ -2,11 +2,16 @@ import socket, threading, time, sys, hashlib, json, base64, struct, io, multipro
 from pathlib import Path
 import traceback
 
+# important todo: wat ?
+# (this library simply has to be a proper package)
+sys.path.append(str(Path(__file__).parent))
+
 from base_room import base_room
 import jag_util
 
 _main_init = '[root]'
 _server_proc = '[Server Process]'
+
 
 
 
@@ -94,7 +99,7 @@ class server_info:
 		self.sysroot = Path(__file__).parent
 
 		# extend python paths with included libs
-		# sys.path.append(str(self.sysroot / 'libs'))
+		sys.path.append(str(self.sysroot / 'libs'))
 
 		# mimes
 		self.mimes = {
@@ -119,6 +124,9 @@ class server_info:
 			# This path should point to a python file with "main()" function inside
 			# If nothing is specified, then default room is created
 			'room_file': None,
+
+			# Could possibly be treated as bootleg anti-ddos/spam
+			'max_connections': 0,
 
 			# The name of the html file to serve when request path is '/'
 			'root_index': None,
@@ -187,16 +195,10 @@ class server_info:
 
 
 
-def sock_server():
+def sock_server(sv_cfg):
 	# Preload resources n stuff
 	print(_server_proc, 'Preloading resources...')
-	server_resources = server_info({
-		'doc_root': r'E:\!webdesign\jag',
-		'port': 56817,
-		'dir_listing': {
-			'enabled': True,
-		}
-	})
+	server_resources = server_info(sv_cfg)
 	print(_server_proc, 'Binding server to a port...')
 	# Port to run the server on
 	# port = 56817
@@ -213,7 +215,7 @@ def sock_server():
 	# If the amount of connections exceeds this limit -
 	# connections become rejected till other ones are resolved (aka closed)
 	# 0 = infinite
-	s.listen(0)
+	s.listen(server_resources.cfg['max_connections'])
 
 	print(_server_proc, 'Server listening on port', s.getsockname()[1])
 
@@ -221,7 +223,7 @@ def sock_server():
 	# important todo: is it just me or this crashes the system ???!!?!??!?!?!?!?
 	# important todo: this creates a bunch of threads as a side effect
 	# important todo: Pickling is EXTREMELY slow and bad
-	
+
 	# Multiprocess pool automatically takes care of a bunch of stuff
 	# But most importantly, it takes care of shadow processess left after collapsed rooms
 	# (linux moment)
@@ -238,12 +240,11 @@ def sock_server():
 			print(_server_proc, 'Spawned a room, continue accepting new connections')
 
 
-
-if __name__ == '__main__':
+def server_process(srv_params, stfu=False):
 	print(_main_init, 'Creating and starting the server process...')
 	# Create a new process containing the main incoming connections listener
-	server_ctrl = multiprocessing.Process(target=sock_server)
-	print(_main_init, 'Created the process instructions, trying to launch the process...')
+	server_ctrl = multiprocessing.Process(target=sock_server, args=(srv_params,))
+	print(_main_init, 'Created the process instructions, attempting launch...')
 	# Initialize the created process
 	# (It's not requred to create a new variable, it could be done in 1 line with .start() in the end)
 	server_ctrl.start()
@@ -253,11 +254,15 @@ if __name__ == '__main__':
 
 
 
-
-
-
-
-
+if __name__ == '__main__':
+	server_params = {
+		'doc_root': r'E:\!webdesign\jag',
+		'port': 56817,
+		'dir_listing': {
+			'enabled': True,
+		}
+	}
+	server_process(server_params)
 
 
 
