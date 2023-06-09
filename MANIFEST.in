@@ -1,3 +1,2 @@
-graft src
-prune */__pycache__ 
-recursive-exclude */__pycache__ *
+graft src/jag_panzer
+include src/jag_panzer/*
