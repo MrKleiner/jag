@@ -113,7 +113,10 @@ class server_info:
 		# Reject document precache
 		self.reject_precache = (self.sysroot / 'assets' / 'reject.html').read_bytes()
 
+
+		#
 		# Base config
+		#
 		self.cfg = {
 			# Port to run the server on
 			'port': 0,
@@ -132,14 +135,14 @@ class server_info:
 			'root_index': None,
 			'enable_indexes': True,
 			'index_names': ['index.html'],
-
-			# The size of a single chunk when streaming content in HTTP chunks
-			'chunk_stream_piece_size': (1024*1024)*10,
 		} | config
 
 		self.doc_root = Path(self.cfg['doc_root'])
 
+
+		#
 		# Directory Listing
+		# 
 		self.cfg['dir_listing'] = {
 			'enabled': True,
 			'dark_theme': False,
@@ -149,9 +152,11 @@ class server_info:
 			from dir_list import dirlist
 			self.list_dir = dirlist(self)
 
+
+		# 
 		# Advanced CDN serving
+		# 
 		self.cfg['static_cdn'] = {
-			'max_buffered_size': (1024*1024)*10,
 			# Path to the static CDN
 			# can point anywhere
 			'path': None,
@@ -174,6 +179,25 @@ class server_info:
 		if self.cfg['static_cdn']['path']:
 			self.cdn_path = Path(self.cfg['static_cdn']['path'])
 			self.precache_cdn()
+
+
+		# 
+		# Buffer sizes
+		# 
+		self.cfg['buffers'] = {
+			# Max file size when serving a file through built-in server services
+			# Default to 8mb
+			'max_file_len': (1024**2)*8,
+
+			# Max size of the header buffer
+			# Default to 512kb
+			'max_header_len': 1024*512,
+
+			# Default size of a single chunk when streaming buffers
+			# Default to 8mb
+			'bufstream_chunk_len': (1024**2)*8,
+		} | (config.get('buffers') or {})
+
 
 	def precache_cdn(self):
 		for file in self.cdn_path.rglob(self.cfg['static_cdn']['pattern'] or '*'):

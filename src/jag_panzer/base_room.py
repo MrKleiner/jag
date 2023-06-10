@@ -54,6 +54,13 @@ class sv_services:
 	# Serve a file to the client in a CDN manner
 	# If no file is provided - serve path from the request
 	def serve_file(self, tgt_file=None, respect_range=True):
+		"""
+		Serve a file to the client.
+		It's possible to specify a target file.
+		If no target file is specified, then reuqest path is used.
+		- tgt_file: Path to the file to serve, defaults to request path.
+		- respect_range: Take the "Range" header into account.
+		"""
 		request = self.request
 		response = self.response
 
@@ -71,7 +78,7 @@ class sv_services:
 		# if the size is too big for a single flush - stream in chunks
 		# This is very important, because serving a 2kb svg in chunks slows the response time
 		# and serving an 18gb .mkv Blu-ray remux in a single flush is impossible
-		if request.abspath.stat().st_size > request.srv_res.cfg['static_cdn']['max_buffered_size']:
+		if request.abspath.stat().st_size > request.srv_res.cfg['buffers']['max_file_len']:
 			with open(str(request.abspath), 'r+b') as f:
 				# if request comes with a Range header - try serving the requested byterange
 				# '0-' VERY funny, fuck right off
@@ -86,18 +93,26 @@ class sv_services:
 		self.request.terminate()
 
 	# List directory as an html page
-	def list_dir(self, respect_htaccess=True):
+	def list_dir(self):
+		"""
+		- Set content type to text/html
+		- Progressively generate listing for a directory and stream it to the client
+		- Close connection
+		"""
 		self.response.content_type = 'text/html'
 
 		with self.response.stream_bytechunks() as stream:
 			for chunk in self.request.srv_res.list_dir.dir_as_html(self.request.abspath):
 				stream.send(chunk)
 
-		self.request.terminate()
 
 	# Serve "index.html" from the requested path
 	# according to server config
 	def serve_dir_index(self):
+		"""
+		Serve "index.html" from the requested path
+		If the file mentioned above doesn't exist in the dir - reject
+		"""
 		if not (self.request.abspath / 'index.html').is_file():
 			self.request.reject()
 
@@ -108,6 +123,13 @@ class sv_services:
 
 	# Because why not
 	def default(self):
+		"""
+		Execute default stack of actions:
+		- if it's a GET request (reject otherwise):
+			- If request path is not relative to the doc root - reject
+			- If request points to a file - serve it
+			- If request points to a directory - list it IF dir listing is enabled
+		"""
 		_default_room(self.request, self.response, self)
 
 
@@ -118,16 +140,20 @@ class sv_services:
 
 # Stream chunks
 class _chunkstream:
-	def __init__(self, cl_con):
+	def __init__(self, request, cl_con, self_terminate):
 		self.cl_con = cl_con
+		self.request = request
+		self.auto_term = self_terminate
 
 	def __enter__(self):
 		return self
 
 	def __exit__(self, type, value, traceback):
 		self.cl_con.sendall(b'0\r\n\r\n')
-		# No termination, because it's speculated,
-		# that it's possible to send some sort of trailing headers
+		# No auto termination, because it's speculated,
+		# that it's possible to send some sort of trailing headers or whatever
+		if self.auto_term:
+			self.request.terminate()
 
 	def send(self, data):
 		# send the chunk size
@@ -147,11 +173,13 @@ class _chunkstream:
 # (start and end cannot be the same)
 # (start and end should not result into 0 bytes read)
 
-# src  ------------------------
-# rng        ^         ^
-# prog       -----
-# want            ---------
-# let             -----
+# src  -----------------------
+# rng        ^         ^      
+# prog       -----            
+# want            ---------   
+# let             ------      
+
+# RANGES ARE INCLUSIVE IN HTTP !
 class aligned_buf_read:
 	def __init__(self, buf, start, end):
 		# START is inclusive
@@ -229,7 +257,7 @@ class sv_response:
 		self.headers['Content-Disposition'] = f'attachment; filename="{str(filename)}"'
 
 	# - Send headers to the client
-	# - Send the entirety of the provided buffer in one go
+	# - Send the entirety of the provided buffer/bytes in one go
 	# - Collapse connection
 	def flush_buffer(self, data):
 		if not isinstance(data, bytes):
@@ -247,24 +275,35 @@ class sv_response:
 		# terminate
 		self.request.terminate()
 
-	def stream_bytechunks(self):
+	def stream_bytechunks(self, self_terminate=True):
+		"""
+		Stream data to the client in HTTP chunks:
+		- set 'Transfer-Encoding' header to 'chunked'
+		- Dump headers
+		- Start streaming chunks:
+			- This returns an object for use with "with" keyword.
+			- The object only has 1 method: send()
+			  Which only takes 1 argument: Bytes to send
+		"""
+
 		# This cannot be otherwise
 		self.headers['Transfer-Encoding'] = 'chunked'
 		# It's impossible to stream multiple groups of chunks
 		self.send_preflight()
 
-		return _chunkstream(self.cl_con)
+		return _chunkstream(self.request, self.cl_con, self_terminate)
 
 	# Automated action:
 	# - Add 'Transfer-Encoding: chunked' header
 	# - Send headers to the client
 	# - Stream the entirety of the provided buffer in chunks
 	# - Collapse the connection
-	def stream_buffer(self, data, chunk_size=65535):
+	def stream_buffer(self, data, chunk_size=None):
 		"""
 		Send the data in chunks.
 		data = io.BytesIO object.
-		chunk_size = the size of a single chunk in bytes
+		chunk_size = the size of a single chunk in bytes, default to server config
+		Example usage: Pass buffer of an open file to stream it to the client.
 		"""
 
 		# The response is EITHER chunked OR has Content-Length
@@ -279,14 +318,14 @@ class sv_response:
 		with self.stream_bytechunks() as stream:
 			while True:
 				# read chunk
-				chunk = data.read(chunk_size)
+				chunk = data.read(
+					chunk_size or self.srv_res.cfg['buffers']['bufstream_chunk_len']
+				)
 				# check if there's still any data
 				if not chunk:
 					break
 				stream.send(chunk)
 
-		# collapse the connection
-		self.request.terminate()
 
 	# Serve specified buffer according to the Range header
 	# important todo: This is 100% raw/bare
@@ -320,12 +359,11 @@ class sv_response:
 
 				aligned_reader = aligned_buf_read(buf, _start, _end)
 				while True:
-					data = aligned_reader.read(self.srv_res.cfg['chunk_stream_piece_size'])
+					data = aligned_reader.read(self.srv_res.cfg['buffers']['bufstream_chunk_len'])
 					if not data:
 						break
 					stream.send(data)
 
-		self.request.terminate()
 
 
 
@@ -416,10 +454,12 @@ class cl_request:
 
 			if double_rn == 2:
 				conlog('Header Buf', self.head_buf.getvalue().decode())
-				# conlog('Body Buf', self.body_buf.getvalue())
 				break
 
 			self.head_buf.write(data)
+
+			if self.head_buf.tell() >= self.srv_res.cfg['buffers']['max_header_len']:
+				self.response.reject(431)
 
 	# Request evaluation has a dedicated function for easier error handling
 	def _eval_request(self):
@@ -522,6 +562,10 @@ class cl_request:
 
 
 	def read_body_stream(self):
+		"""
+		(Generator)
+		Progressively read the incoming body of the request
+		"""
 		content_length = int(self.headers['content-length'])
 		read_progress = self.body_buf.seek(0, 2)
 		yield self.body_buf.getvalue()
@@ -571,6 +615,9 @@ class cl_request:
 
 	@property
 	def cookie(self):
+		"""
+		Nicely formatted cookie header
+		"""
 		if self._cookie:
 			return self._cookie
 
