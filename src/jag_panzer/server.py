@@ -1,4 +1,4 @@
-import socket, threading, time, sys, hashlib, json, base64, struct, io, multiprocessing
+import socket, threading, time, sys, hashlib, json, base64, struct, io, multiprocessing, os
 from pathlib import Path
 import traceback
 
@@ -9,9 +9,10 @@ sys.path.append(str(Path(__file__).parent))
 from base_room import base_room
 import jag_util
 
+from easy_timings.mstime import perftest
+
 _main_init = '[root]'
 _server_proc = '[Server Process]'
-
 
 
 
@@ -43,6 +44,7 @@ class pylib_preload:
 		import traceback
 		import urllib
 		import math
+		import datetime
 
 		from pathlib import Path
 
@@ -63,6 +65,7 @@ class pylib_preload:
 		self.traceback = traceback
 		self.urllib =    urllib
 		self.math =      math
+		self.datetime =  datetime
 
 
 
@@ -84,7 +87,7 @@ class server_info:
 	some preloaded python libraries,
 	and other stuff
 	"""
-	def __init__(self, config=None):
+	def __init__(self, init_config=None):
 		from mimes.mime_types_base import base_mimes
 		from mimes.mime_types_base import base_mimes_signed
 		from response_codes import codes as _rcodes
@@ -93,7 +96,9 @@ class server_info:
 		import io
 		import jag_util
 
-		config = config or {}
+		self.devtime = 0
+
+		config = init_config or {}
 
 		# root of the python package
 		self.sysroot = Path(__file__).parent
@@ -131,6 +136,12 @@ class server_info:
 			# Could possibly be treated as bootleg anti-ddos/spam
 			'max_connections': 0,
 
+			# The amount of workers in the pool
+			'pool_size': os.cpu_count()*2,
+
+			# https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Server-Timing
+			'enable_web_timing_api': False,
+
 			# The name of the html file to serve when request path is '/'
 			'root_index': None,
 			'enable_indexes': True,
@@ -144,13 +155,10 @@ class server_info:
 		# Directory Listing
 		# 
 		self.cfg['dir_listing'] = {
-			'enabled': True,
+			'enabled': False,
 			'dark_theme': False,
 		} | (config.get('dir_listing') or {})
 
-		if self.cfg['dir_listing']['enabled']:
-			from dir_list import dirlist
-			self.list_dir = dirlist(self)
 
 
 		# 
@@ -194,36 +202,25 @@ class server_info:
 			'max_header_len': 1024*512,
 
 			# Default size of a single chunk when streaming buffers
-			# Default to 8mb
-			'bufstream_chunk_len': (1024**2)*8,
+			# Default to 5mb
+			'bufstream_chunk_len': (1024**2)*5,
 		} | (config.get('buffers') or {})
 
 
-	def precache_cdn(self):
-		for file in self.cdn_path.rglob(self.cfg['static_cdn']['pattern'] or '*'):
-			self.cdn_cache[file.relative_to(self.cdn_path).as_posix()] = \
-				io.BytesIO(file.read_bytes())
-
-		print(
-			_server_proc,
-			'precached CDN',
-			jag_util.dict_pretty_print(self.cdn_cache)
-		)
-
 	def reload_libs(self):
-		import time
-		ded = time.time()
 		# preload python libraries
 		self.pylib = pylib_preload()
-		print('Preloaded libs in', (time.time() - ded)*1000)
+
+
+
 
 
 
 def sock_server(sv_cfg):
 	# Preload resources n stuff
-	print(_server_proc, 'Preloading resources...')
+	print(_server_proc, 'Preloading resources... (4/7)')
 	server_resources = server_info(sv_cfg)
-	print(_server_proc, 'Binding server to a port...')
+	print(_server_proc, 'Binding server to a port... (5/7)')
 	# Port to run the server on
 	# port = 56817
 	port = server_resources.cfg['port']
@@ -231,6 +228,7 @@ def sock_server(sv_cfg):
 	s = socket.socket()
 
 	# Bind server to the specified port. 0 = Find the closest free port and run stuff on it
+	# todo: is this really the only way to bind stuff to the current IP ?
 	_get_ip_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 	_get_ip_s.connect(('8.8.8.8', 0))
 	current_ip = _get_ip_s.getsockname()[0]
@@ -245,7 +243,7 @@ def sock_server(sv_cfg):
 	# 0 = infinite
 	s.listen(server_resources.cfg['max_connections'])
 
-	print(_server_proc, 'Server listening on port', s.getsockname()[1])
+	print(_server_proc, 'Server listening on port (6/7)', s.getsockname()[1])
 
 	# important todo: does this actually slow the shit down?
 	# important todo: is it just me or this crashes the system ???!!?!??!?!?!?!?
@@ -255,29 +253,45 @@ def sock_server(sv_cfg):
 	# Multiprocess pool automatically takes care of a bunch of stuff
 	# But most importantly, it takes care of shadow processess left after collapsed rooms
 	# (linux moment)
-	with multiprocessing.Pool() as pool:
+
+	# EXCEPT, process pool is garbage: It's a pool with a fixed amount of workers,
+	# where tasks are distributed between them. Shit
+	# EXCEPT, the amount of workes can be specified manually
+	with multiprocessing.Pool(server_resources.cfg['pool_size']) as pool:
+		print(_server_proc, 'Accepting connections... (7/7)')
 		while True:
-			print(_server_proc, 'Entering the main listen cycle which would spawn rooms upon incoming connection requests...')
+			print('Waiting for requests...')
+			# conlog('Entering the main listen cycle which would spawn rooms upon incoming connection requests...', echo=_server_proc)
 			# Try establishing connection, nothing below this line gets executed
 			# until server receives a new connection
 			conn, address = s.accept()
-			print(_server_proc, 'Got connection, spawning a room. Client info:', address)
+			# conlog('Got connection, spawning a room. Client info:', address, echo=_server_proc)
 			# Create a basic room
+			server_resources.devtime = time.time()
 			pool.apply_async(base_room, (conn, address, server_resources))
+			print('    Got request, forwarding...')
+			# conlog('Spawned a room, continue accepting new connections', echo=_server_proc)
+			# poot = multiprocessing.Process(target=base_room, args=(conn, address, server_resources,), daemon=True).start()
+			# with perftest('      Forking...'):
+			# 	multiprocessing.Process(target=base_room, args=(conn, address, server_resources,), daemon=True).start()
+			# 	multiprocessing.Process(target=base_room, args=(conn, address, server_resources), daemon=True).start()
+			# 	multiprocessing.Process(target=base_room, args=(conn, address, 'sex')).start()
+			# 	pool.apply_async(base_room, (conn, address, server_resources))
+			# 	pool.apply_async(base_room, (conn, address, server_resources))
 
-			print(_server_proc, 'Spawned a room, continue accepting new connections')
+
 
 
 def server_process(srv_params, stfu=False):
-	print(_main_init, 'Creating and starting the server process...')
+	print(_main_init, 'Creating and starting the server process... (1/7)')
 	# Create a new process containing the main incoming connections listener
 	server_ctrl = multiprocessing.Process(target=sock_server, args=(srv_params,))
-	print(_main_init, 'Created the process instructions, attempting launch...')
+	print(_main_init, 'Created the process instructions, attempting launch... (2/7)')
 	# Initialize the created process
 	# (It's not requred to create a new variable, it could be done in 1 line with .start() in the end)
 	server_ctrl.start()
 
-	print(_main_init, 'Launched the server process...')
+	print(_main_init, 'Launched the server process... (3/7)')
 
 
 
@@ -288,7 +302,8 @@ if __name__ == '__main__':
 		'port': 56817,
 		'dir_listing': {
 			'enabled': True,
-		}
+		},
+		# 'routes': _routes,
 	}
 	server_process(server_params)
 

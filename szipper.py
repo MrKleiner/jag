@@ -1,4 +1,4 @@
-
+from pathlib import Path
 
 class szip:
 	"""Easily create and unpack 7z archives"""

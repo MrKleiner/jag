@@ -1,6 +1,7 @@
 
 
 def dict_pretty_print(d):
+	return
 	sex = '\n'
 	for key in d:
 		sex += f"""{('>' + str(key) + '<').ljust(30)} :: >{str(d[key])}<""" + '\n'
@@ -15,3 +16,8 @@ def multireplace(src, replace_pairs):
 
 def clamp(num, tgt_min, tgt_max):
 	return max(tgt_min, min(num, tgt_max))
+
+
+def int_to_chunksize(i):
+	return f"""{hex(i).lstrip('0x')}\r\n""".encode()
+

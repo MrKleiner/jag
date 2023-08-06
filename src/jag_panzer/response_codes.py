@@ -72,5 +72,3 @@ codes = {
 	511: '511 Network Authentication Required',
 }
 
-
-

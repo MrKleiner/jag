@@ -1,12 +1,19 @@
+from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).parent))
+
+
+
 from jag_util import dict_pretty_print
 
 
 _room_echo = '[Request Evaluator]'
 _rebind = print
 
-def conlog(*args):
-	print(_room_echo, *args)
 
+def conlog(*args):
+	return
+	print(_room_echo, *args)
 
 
 def _default_room(request, response, services):
@@ -41,7 +48,113 @@ def _default_room(request, response, services):
 
 
 
-# A bunch of default services the server can provide
+class perfrec:
+	def __init__(self, sv_timings, msg='perftest', _internal=False, noreport=False):
+		"""
+		- msg:str='perftest'   -> The name of the timing record
+		- ms:bool=True         -> Use milliseconds instead of seconds to record timing
+		- _internal:bool=False -> Wether the record is coming from jag itself or user
+		- noreport:bool=False  -> Don't write down the record
+		"""
+		self._internal = _internal
+		self.noreport = noreport
+		self.sv_timings = sv_timings
+
+		# time module
+		self.time = sv_timings.time
+		# timestamp of the beginning of the record
+		self.start = self.time.time()
+		# The name of the timing record
+		self.msg = msg
+		# Resulting timings
+		self.result = ('', 0)
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, type, value, traceback):
+		mtime = (self.time.time() - self.start) * 1000
+		self.result = (self.msg, mtime)
+
+		if not self.noreport:
+			if self._internal:
+				self.sv_timings.jag_time.append(self.result)
+			else:
+				self.sv_timings.timings.append(self.result)
+
+
+
+
+class server_timings:
+	"""
+	Various tools for measuring server performance.
+	
+	Timings are recorded at all times, but Server-Timing API
+	has to be explicitly enabled.
+
+	Ideally, the server should respond within ~100ms,
+	so try to measure performance in groups and not individual function calls.
+	"""
+	def __init__(self):
+		# time module
+		import time
+		self.time = time
+
+		# internal timings
+		self.jag_time = []
+		# custom timings
+		self.timings = []
+
+		# Inclusion of the Server-Timing response header
+		self.enable_header = False
+		# Whether to include internal Jag timings or not
+		self.header_incl_jag = False
+
+
+	def enable_in_response(self, include_jag_timings=False):
+		"""
+		Enable 'Server-Timing' header in response.
+		The system follows Server-Timing specs.
+		- include_jag_timings:bool=False -> whether to include internal Jag timings or not
+
+		It's ok to call this function multiple times.
+		"""
+		self.enable_header = True
+		self.header_incl_jag = include_jag_timings
+
+
+	def record(self, msg='perftest', noreport=False, _internal=False):
+		"""
+		- msg:str='perftest'   -> The name of the timing record
+		- noreport:bool=False  -> Don't write down the record
+		"""
+		return perfrec(self, msg, _internal, noreport)
+
+
+	def push_record(self, record, _internal=False):
+		"""
+		Manually add an abstract record.
+		Format: tuple(message:str, timing:int|float|str)
+		"""
+		if _internal:
+			self.jag_time.append(record)
+		else:
+			self.timings.append(record)
+
+
+	def as_header(self, only_value=True):
+		records = []
+		for rec in self.jag_time:
+			records.append(f'''{rec[0]};dur={rec[1]}''')
+		for rec in self.timings:
+			records.append(f'''{rec[0]};dur={rec[1]}''')
+
+		if only_value:
+			return ', '.join(records)
+		else:
+			return f"""Server-Timings: {', '.join(records)}"""
+
+
 class sv_services:
 	"""
 	A bunch of default services the server can provide.
@@ -50,10 +163,11 @@ class sv_services:
 	def __init__(self, request, response):
 		self.request = request
 		self.response = response
+		self.srv_res = request.srv_res
 
 	# Serve a file to the client in a CDN manner
 	# If no file is provided - serve path from the request
-	def serve_file(self, tgt_file=None, respect_range=True):
+	def serve_file(self, tgt_file=None, respect_range=True, _force_oneflush=False):
 		"""
 		Serve a file to the client.
 		It's possible to specify a target file.
@@ -64,31 +178,41 @@ class sv_services:
 		request = self.request
 		response = self.response
 
-		if not request.abspath.is_file():
+		Path = self.srv_res.pylib.Path
+
+		if not tgt_file and not request.abspath.is_file():
 			self.request.reject()
 			return
+		tgt_file = Path(tgt_file or request.abspath)
 
 		# all good - set content type and send the shit
 		response.content_type = (
-			request.srv_res.mimes['signed'].get(request.abspath.suffix)
+			request.srv_res.mimes['signed'].get(tgt_file.suffix)
 			or
 			'application/octet-stream'
 		)
 
+		# Basically, debugging
+		if _force_oneflush:
+			response.flush_buffer(tgt_file.read_bytes())
+			self.request.terminate()
+			return
+
 		# if the size is too big for a single flush - stream in chunks
 		# This is very important, because serving a 2kb svg in chunks slows the response time
-		# and serving an 18gb .mkv Blu-ray remux in a single flush is impossible
-		if request.abspath.stat().st_size > request.srv_res.cfg['buffers']['max_file_len']:
-			with open(str(request.abspath), 'r+b') as f:
+		# and serving an 18gb .mkv Blu-Ray remux in a single flush is impossible
+		if tgt_file.stat().st_size > request.srv_res.cfg['buffers']['max_file_len']:
+			with open(str(tgt_file), 'r+b') as f:
 				# if request comes with a Range header - try serving the requested byterange
 				# '0-' VERY funny, fuck right off
 				if request.byterange and (request.headers.get('range', 'bytes=0-').strip() != 'bytes=0-') and respect_range:
 					conlog('The client has fucked us over:', request.headers.get('range', '0-').strip())
 					response.serve_range(f)
 				else:
-					response.stream_buffer(f, (1024*1024)*5)
+					# response.stream_buffer(f, (1024*1024)*5)
+					response.stream_buffer(f, self.srv_res.cfg['buffers']['bufstream_chunk_len'])
 		else:
-			response.flush_buffer(request.abspath.read_bytes())
+			response.flush_buffer(tgt_file.read_bytes())
 
 		self.request.terminate()
 
@@ -99,6 +223,9 @@ class sv_services:
 		- Progressively generate listing for a directory and stream it to the client
 		- Close connection
 		"""
+		from dir_list import dirlist
+		lister = dirlist(self.request.srv_res)
+
 		self.response.content_type = 'text/html'
 
 		with self.response.stream_bytechunks() as stream:
@@ -179,7 +306,7 @@ class _chunkstream:
 # want            ---------   
 # let             ------      
 
-# RANGES ARE INCLUSIVE IN HTTP !
+# RANGES ARE INCLUSIVE FROM BOTH SIDES IN HTTP !
 class aligned_buf_read:
 	def __init__(self, buf, start, end):
 		# START is inclusive
@@ -209,16 +336,19 @@ class sv_response:
 		self.request = request
 		self.cl_con = cl_con
 		self.srv_res = srv_res
+		self.timings = self.request.timings
 		self.headers = {
 			'Server': 'Jag',
+			# 'Server-Timings': '',
 		}
+		self.add_cookies = []
 
 		self.content_type = 'application/octet-stream'
 		self.code = 200
 
 		self.offered_services = sv_services(self.request, self)
 
-	# dump headers and response code to the client
+	# Dump headers and response code to the client
 	def send_preflight(self):
 		"""
 		Dump headers and response code to the client
@@ -226,17 +356,30 @@ class sv_response:
 
 		# send response code
 		self.cl_con.sendall(
-			f"""HTTP/1.1 {self.srv_res.response_codes[self.code]}\r\n""".encode()
+			f"""HTTP/1.1 {self.srv_res.response_codes.get(self.code, self.code)}\r\n""".encode()
 		)
 
 		# important todo: better way of achieving this
 		self.headers['Content-Type'] = self.content_type
+
+		if self.timings.enable_header:
+			self.headers['Server-Timing'] = self.timings.as_header()
 
 		# send headers
 		for header_name, header_value in self.headers.items():
 			self.cl_con.sendall(
 				f"""{header_name}: {header_value}\r\n""".encode()
 			)
+
+		# send cookies, if any
+		# important todo: this is very slow
+		if self.add_cookies:
+			cbuf = self.srv_res.pylib.io.BytesIO()
+			for cookie in self.add_cookies:
+				cbuf.write(b'Set-Cookie: ')
+				cbuf.write(cookie)
+				cbuf.write(b'\r\n')
+			self.cl_con.sendall(cbuf.getvalue())
 
 		# Send an extra \r\n to indicate the end of headers
 		self.cl_con.sendall('\r\n'.encode())
@@ -256,6 +399,12 @@ class sv_response:
 		"""
 		self.headers['Content-Disposition'] = f'attachment; filename="{str(filename)}"'
 
+	def set_filename(self, filename):
+		"""
+		Give content a name, but not mark it for download.
+		"""
+		self.headers['Content-Disposition'] = f'filename="{str(filename)}"'
+
 	# - Send headers to the client
 	# - Send the entirety of the provided buffer/bytes in one go
 	# - Collapse connection
@@ -274,6 +423,33 @@ class sv_response:
 
 		# terminate
 		self.request.terminate()
+
+
+	def flush_json(self, jdata, bytes_to_array=False):
+		"""
+		Same as flush_buffer, except this function takes dictionaries as an input.
+		Sets Content-Type header to 'application/json'
+		This function also automatically encodes some commonly used types, such as:
+		pathlib > str
+		complex > tuple(c.real, c.imag)
+		"""
+		libs = self.srv_res.pylib
+		json = libs.json
+
+		# todo: use dicts to determine types
+		def complex_encoder(obj):
+			if isinstance(obj, libs.Path):
+				return str(obj)
+			elif isinstance(obj, complex):
+				return (obj.real, obj.imag)
+			else:
+				raise TypeError(f"""Object of type {obj.__class__.__name__} is not serializable""")
+
+		self.content_type = 'application/json'
+		self.flush_buffer(
+			json.dumps(jdata, default=complex_encoder).encode()
+		)
+
 
 	def stream_bytechunks(self, self_terminate=True):
 		"""
@@ -365,22 +541,70 @@ class sv_response:
 					stream.send(data)
 
 
+	def set_cookie(self, cname, cval, domain=None, expires=None, secure=False, path=None, httponly=False, max_age=None, samesite=None):
+		"""
+		Adds one Set-Cookie header per call.
+		"expires" parameter accepts datetime objects.
+		"""
+		datetime = self.srv_res.pylib.datetime
+		wday_picker = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+		month_picker = [
+			'_',
+			'Jan',
+			'Feb',
+			'Mar',
+			'Apr',
+			'May',
+			'Jun',
+			'Jul',
+			'Aug',
+			'Sep',
+			'Oct',
+			'Nov',
+			'Dec',
+		]
+
+		cookie_buf = self.srv_res.pylib.io.BytesIO()
+		cookie_buf.write(f'{cname}={cval}'.encode())
+
+		if domain:
+			cookie_buf.write(f'; Domain={domain}'.encode())
+		if expires:
+			formatted_expires = expires
+			if isinstance(expires, datetime.datetime):
+				asutc = expires.astimezone(datetime.timezone.utc)
+				formatted_expires = f"""{wday_picker[asutc.weekday()]}, {asutc.day} {month_picker[asutc.month]} {asutc.year} {asutc.strftime('%H:%M:%S')} GMT"""
+			cookie_buf.write(f'; Expires={formatted_expires}'.encode())
+		if secure == True:
+			cookie_buf.write(b'; Secure')
+		if path:
+			cookie_buf.write(f'; Path={path}'.encode())
+		if httponly:
+			cookie_buf.write(b'; HttpOnly')
+		if max_age:
+			cookie_buf.write(f'; Max-Age={max_age}'.encode())
+		if samesite:
+			cookie_buf.write(f'; SameSite={samesite.capitalize()}'.encode())
+
+		self.add_cookies.append(cookie_buf.getvalue())
 
 
 
 
 class cl_request:
-	def __init__(self, cl_con, cl_addr, srv_res):
+	def __init__(self, cl_con, cl_addr, srv_res, timing_api):
 		self.cl_con = cl_con
 		self.cl_addr = cl_addr
 		self.srv_res = srv_res
+		self.timings = timing_api
 
 		self.headers = {}
 
 		# Initialize the response class
 		# Early init of this class is needed
 		# for rejecting certain requests
-		self.response = sv_response(self, cl_con, srv_res)
+		with self.timings.record('rsp_class_init', _internal=True):
+			self.response = sv_response(self, cl_con, srv_res)
 
 		# Some widely-used headers are lazily processed
 		# for easier use
@@ -469,51 +693,54 @@ class cl_request:
 		Path = self.srv_res.pylib.Path
 
 		# Fully custom method of receiving the Request Header
-		# gives a lot of benefits
-		self.collect_head_buf()
+		# gives a lot of benefits (as well as causing mental retardation)
+		with self.timings.record('collect_hbuf', _internal=True):
+			self.collect_head_buf()
 
-		# raw bytes of the header
-		header_data = self.head_buf.getvalue()
-		conlog(header_data.decode())
 
-		# split header into lines
-		header_data = header_data.decode().split('\r\n')
-		conlog('\n'.join(header_data))
+		with self.timings.record('eval_hbuf', _internal=True):
+			# raw bytes of the header
+			header_data = self.head_buf.getvalue()
+			conlog(header_data.decode())
 
-		# First line of the header is always the request method, path and http version
-		# It's up to the client to send valid data
-		self.method, self.path, self.protocol = header_data[0].split(' ')
-		conlog(self.method, self.path, self.protocol)
-		self.method = self.method.lower()
+			# split header into lines
+			header_data = header_data.decode().split('\r\n')
+			conlog('\n'.join(header_data))
 
-		# deconstruct the url into components
-		parsed_url = urllib.parse.urlparse(self.path)
+			# First line of the header is always the request method, path and http version
+			# It's up to the client to send valid data
+			self.method, self.path, self.protocol = header_data[0].split(' ')
+			conlog(self.method, self.path, self.protocol)
+			self.method = self.method.lower()
 
-		# important todo: lazy processing
-		# first - evaluate query params
-		self.query_params = {k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
+			# deconstruct the url into components
+			parsed_url = urllib.parse.urlparse(self.path)
 
-		# then, evaluate path
-		decoded_url_path = urllib.parse.unquote(parsed_url.path)
-		self.abspath = self.srv_res.doc_root / Path(decoded_url_path.lstrip('/'))
-		self.relpath = Path(decoded_url_path.lstrip('/'))
-		self.trimpath = self.relpath
+			# important todo: lazy processing
+			# first - evaluate query params
+			self.query_params = {k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
 
-		# Delete the first line as it's no longer needed
-		del header_data[0]
+			# then, evaluate path
+			decoded_url_path = urllib.parse.unquote(parsed_url.path)
+			self.abspath = self.srv_res.doc_root / Path(decoded_url_path.lstrip('/'))
+			self.relpath = Path(decoded_url_path.lstrip('/'))
+			self.trimpath = self.relpath
 
-		# parse the remaining headers into a dict
-		request_dict = {}
-		for line in header_data:
-			# skip empty stuff
-			if line.strip() == '':
-				continue
-			line_split = line.split(': ')
-			request_dict[line_split[0].lower()] = ': '.join(line_split[1:])
+			# Delete the first line as it's no longer needed
+			del header_data[0]
 
-		dict_pretty_print(request_dict)
+			# parse the remaining headers into a dict
+			request_dict = {}
+			for line in header_data:
+				# skip empty stuff
+				if line.strip() == '':
+					continue
+				line_split = line.split(': ')
+				request_dict[line_split[0].lower()] = ': '.join(line_split[1:])
 
-		self.headers = request_dict
+			dict_pretty_print(request_dict)
+
+			self.headers = request_dict
 
 
 	# Actions
@@ -535,9 +762,24 @@ class cl_request:
 		self.response.content_type = 'text/html'
 		self.response.flush_buffer(
 			self.srv_res.reject_precache
-			.replace(b'$$reason', self.srv_res.response_codes[code].encode())
+			.replace(b'$$reason', self.srv_res.response_codes.get(code, f'{code} ERROR').encode())
 			.replace(b'$$hint', str(hint).encode())
 		)
+
+	def redirect(self, target, reason=7, softlink=False):
+		"""
+		Redirect the request to the target destination.
+		- target: target URL to redirect to
+		- reason: 0-8 (300, 301, 302...), default to 7 (307)
+		- softlink: False = Location. True = Content-Location
+		"""
+		# self.srv_res.response_codes.get
+		reason_picker = {code:(300+code) for code in range(7)}
+		self.response.code = reason_picker.get(reason, 307)
+		self.response.headers['Content-Location' if hardlink else 'Location'] = str(target)
+
+		self.response.send_preflight()
+		self.terminate()
 
 	# I cannot be bothered. Here, have *args and fuckoff
 	def match_path(self, action_dict, *args, trim_path=True):
@@ -558,13 +800,15 @@ class cl_request:
 				return func(self, self.response, self.response.offered_services, *args)
 
 		# if no match was found - return false
+		# todo: return some sort of a variable/class,
+		# so that it's more specific
 		return False
 
 
 	def read_body_stream(self):
 		"""
 		(Generator)
-		Progressively read the incoming body of the request
+		Progressively read body of the incoming request
 		"""
 		content_length = int(self.headers['content-length'])
 		read_progress = self.body_buf.seek(0, 2)
@@ -577,6 +821,19 @@ class cl_request:
 			received_data = self.cl_con.recv(65535)
 			yield received_data
 			read_progress += len(received_data)
+
+
+	def read_body(self, as_buf=False):
+		import io
+		buf = io.BytesIO()
+		for chunk in self.read_body_stream():
+			buf.write(chunk)
+
+		if as_buf:
+			buf.seek(0, 0)
+			return buf
+		else:
+			return buf.getvalue()
 
 
 	# Utility
@@ -644,6 +901,13 @@ class cl_request:
 		return self._cache_control
 
 
+	# A client may ask for an access to a specific chunk of the target file.
+	# In this case a "Range" header is present.
+	# It has a format of start-end (both inclusive)
+	# This function returns an evaluated tuple from the following header.
+	# If "Range" header is not present - None is returned.
+	# Tuple format is as follows: (int|None, int|None)
+	# Negative numbers are clamped to 0
 	@property
 	def byterange(self):
 		if self._byterange:
@@ -680,27 +944,41 @@ class cl_request:
 # If callback function is NOT specified, then server provides
 # Some of its default services
 def base_room(cl_con, cl_addr, srv_res):
-	import sys, traceback
+	import sys, traceback, time
 	import importlib.util
 
 	try:
+		# Init timings
+		timing_api = server_timings()
+
+		timing_api.push_record(
+			('devtime', (time.time() - srv_res.devtime)*1000),
+			_internal=True
+		)
+
+		# todo: Shouldn't the class take this as an argument?
+		if srv_res.cfg['enable_web_timing_api']:
+			timing_api.enable_in_response(True)
+
 		# precache some commonly-used python libraries
 		# important todo: is this even needed?
-		srv_res.reload_libs()
+		with timing_api.record('lib_cache', _internal=True):
+			srv_res.reload_libs()
 
 		# Evaluate the request
-		evaluated_request = cl_request(cl_con, cl_addr, srv_res)
-		conlog('Initialized basic room, evaluated request')
+		with timing_api.record('rq_eval', _internal=True):
+			evaluated_request = cl_request(cl_con, cl_addr, srv_res, timing_api)
 
-		# Create service object
-		# offered_services = sv_services(evaluated_request, evaluated_request.response)
+		conlog('Initialized basic room, evaluated request')
 
 		# Now either pass the control to the room specified in the config
 		# or the default room
 		if srv_res.cfg['room_file']:
-			spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
-			custom_func = importlib.util.module_from_spec(spec)
-			spec.loader.exec_module(custom_func)
+			with timing_api.record('spec', _internal=True):
+				spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
+				custom_func = importlib.util.module_from_spec(spec)
+				spec.loader.exec_module(custom_func)
+
 			custom_func.main(
 				evaluated_request,
 				evaluated_request.response,
@@ -714,6 +992,7 @@ def base_room(cl_con, cl_addr, srv_res):
 			)
 
 	except Exception as err:
+
 		conlog(
 			''.join(
 				traceback.format_exception(
@@ -723,6 +1002,7 @@ def base_room(cl_con, cl_addr, srv_res):
 				)
 			)
 		)
+
 
 		_trback = ''.join(
 			traceback.format_exception(
@@ -739,7 +1019,7 @@ def base_room(cl_con, cl_addr, srv_res):
 					<title>Rejected</title>
 				</head>
 				<body>
-					<h1>500 Internal Server Error</h1>
+					<h1 style="border-left: 2px #9F2E25;">500 Internal Server Error</h1>
 					<h3>Server: Jag</h3>
 					<p style="white-space: pre;">{_trback}</p>
 				</body>
