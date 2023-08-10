@@ -46,6 +46,12 @@ def _default_room(request, response, services):
 	# otherwise - reject
 	request.reject()
 
+def debg(*args):
+	print(*args)
+
+def print(*args):
+	return
+
 
 
 class perfrec:
@@ -110,6 +116,8 @@ class server_timings:
 		# Whether to include internal Jag timings or not
 		self.header_incl_jag = False
 
+		self.log = jag_log()
+
 
 	def enable_in_response(self, include_jag_timings=False):
 		"""
@@ -167,13 +175,14 @@ class sv_services:
 
 	# Serve a file to the client in a CDN manner
 	# If no file is provided - serve path from the request
-	def serve_file(self, tgt_file=None, respect_range=True, _force_oneflush=False):
+	def serve_file(self, tgt_file=None, respect_range=True, chunked=False, _force_oneflush=False):
 		"""
 		Serve a file to the client.
 		It's possible to specify a target file.
 		If no target file is specified, then reuqest path is used.
-		- tgt_file: Path to the file to serve, defaults to request path.
-		- respect_range: Take the "Range" header into account.
+		- tgt_file:str|pathlike=None -> Path to the file to serve, defaults to request path.
+		- respect_range:bool=True    -> Take the "Range" header into account.
+		- chunked:bool=False         -> If set to true - use Transfer-Encoding: chunked
 		"""
 		request = self.request
 		response = self.response
@@ -210,7 +219,11 @@ class sv_services:
 					response.serve_range(f)
 				else:
 					# response.stream_buffer(f, (1024*1024)*5)
-					response.stream_buffer(f, self.srv_res.cfg['buffers']['bufstream_chunk_len'])
+					response.stream_buffer(
+						f,
+						chunked=chunked,
+						buf_size=self.srv_res.cfg['buffers']['bufstream_chunk_len'],
+					)
 		else:
 			response.flush_buffer(tgt_file.read_bytes())
 
@@ -228,7 +241,7 @@ class sv_services:
 
 		self.response.content_type = 'text/html'
 
-		with self.response.stream_bytechunks() as stream:
+		with self.response.stream_bytes() as stream:
 			for chunk in self.request.srv_res.list_dir.dir_as_html(self.request.abspath):
 				stream.send(chunk)
 
@@ -267,16 +280,18 @@ class sv_services:
 
 # Stream chunks
 class _chunkstream:
-	def __init__(self, request, cl_con, self_terminate):
+	def __init__(self, request, cl_con, self_terminate, non_chunked=False):
 		self.cl_con = cl_con
 		self.request = request
 		self.auto_term = self_terminate
+		self.non_chunked = non_chunked
 
 	def __enter__(self):
 		return self
 
 	def __exit__(self, type, value, traceback):
-		self.cl_con.sendall(b'0\r\n\r\n')
+		if not self.non_chunked:
+			self.cl_con.sendall(b'0\r\n\r\n')
 		# No auto termination, because it's speculated,
 		# that it's possible to send some sort of trailing headers or whatever
 		if self.auto_term:
@@ -284,11 +299,13 @@ class _chunkstream:
 
 	def send(self, data):
 		# send the chunk size
-		self.cl_con.sendall(f"""{hex(len(data)).lstrip('0x')}\r\n""".encode())
+		if not self.non_chunked:
+			self.cl_con.sendall(f"""{hex(len(data)).lstrip('0x')}\r\n""".encode())
 		# send the chunk itself
 		self.cl_con.sendall(data)
 		# send separator
-		self.cl_con.sendall(b'\r\n')
+		if not self.non_chunked: 
+			self.cl_con.sendall(b'\r\n')
 
 
 
@@ -451,10 +468,10 @@ class sv_response:
 		)
 
 
-	def stream_bytechunks(self, self_terminate=True):
+	def stream_bytes(self, content_length=None, self_terminate=True):
 		"""
 		Stream data to the client in HTTP chunks:
-		- set 'Transfer-Encoding' header to 'chunked'
+		- set 'Transfer-Encoding' header to 'chunked' IF content_length is none
 		- Dump headers
 		- Start streaming chunks:
 			- This returns an object for use with "with" keyword.
@@ -463,39 +480,48 @@ class sv_response:
 		"""
 
 		# This cannot be otherwise
-		self.headers['Transfer-Encoding'] = 'chunked'
+		if not content_length:
+			self.headers['Transfer-Encoding'] = 'chunked'
+		else:
+			self.headers['Content-Length'] = content_length
+
 		# It's impossible to stream multiple groups of chunks
 		self.send_preflight()
 
-		return _chunkstream(self.request, self.cl_con, self_terminate)
+		return _chunkstream(self.request, self.cl_con, self_terminate, not not content_length)
+
 
 	# Automated action:
 	# - Add 'Transfer-Encoding: chunked' header
 	# - Send headers to the client
 	# - Stream the entirety of the provided buffer in chunks
 	# - Collapse the connection
-	def stream_buffer(self, data, chunk_size=None):
+	def stream_buffer(self, data, chunked=False, buf_size=None):
 		"""
 		Send the data in chunks.
 		data = io.BytesIO object.
-		chunk_size = the size of a single chunk in bytes, default to server config
+		buf_size = the size of a single chunk in bytes, default to server config
 		Example usage: Pass buffer of an open file to stream it to the client.
 		"""
+		clen = None
 
 		# The response is EITHER chunked OR has Content-Length
-		self.headers['Transfer-Encoding'] = 'chunked'
+		if chunked:
+			self.headers['Transfer-Encoding'] = 'chunked'
+		else:
+			clen = data.seek(0, 2)
 
 		# first - dump headers
-		self.send_preflight()
+		# self.send_preflight()
 
-		# Safety (tin foil hat): Move the carret to the very beginning of the buffer
+		# Move the carret to the very beginning of the buffer
 		data.seek(0, 0)
 		# stream chunks
-		with self.stream_bytechunks() as stream:
+		with self.stream_bytes(content_length=clen) as stream:
 			while True:
 				# read chunk
 				chunk = data.read(
-					chunk_size or self.srv_res.cfg['buffers']['bufstream_chunk_len']
+					buf_size or self.srv_res.cfg['buffers']['bufstream_chunk_len']
 				)
 				# check if there's still any data
 				if not chunk:
@@ -516,7 +542,7 @@ class sv_response:
 		buf_size = buf.seek(0, 2)
 
 		# begin streaming
-		with self.stream_bytechunks() as stream:
+		with self.stream_bytes() as stream:
 			# stream all chunk groups
 			# (order is preserved)
 			for chunk_start, chunk_end in self.request.byterange:
@@ -547,6 +573,7 @@ class sv_response:
 		"expires" parameter accepts datetime objects.
 		"""
 		datetime = self.srv_res.pylib.datetime
+		# This is retarded...
 		wday_picker = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 		month_picker = [
 			'_',
@@ -597,6 +624,7 @@ class cl_request:
 		self.cl_addr = cl_addr
 		self.srv_res = srv_res
 		self.timings = timing_api
+		self.log = timing_api.log
 
 		self.headers = {}
 
@@ -618,6 +646,7 @@ class cl_request:
 		# It's client's responsibility to perform good requests
 		try:
 			self._eval_request()
+			self.log.upd_request_info(self)
 		except Exception as e:
 			self.reject(400)
 			raise e
@@ -724,7 +753,7 @@ class cl_request:
 			decoded_url_path = urllib.parse.unquote(parsed_url.path)
 			self.abspath = self.srv_res.doc_root / Path(decoded_url_path.lstrip('/'))
 			self.relpath = Path(decoded_url_path.lstrip('/'))
-			self.trimpath = self.relpath
+			self.trimpath = decoded_url_path
 
 			# Delete the first line as it's no longer needed
 			del header_data[0]
@@ -741,6 +770,7 @@ class cl_request:
 			dict_pretty_print(request_dict)
 
 			self.headers = request_dict
+
 
 
 	# Actions
@@ -932,6 +962,36 @@ class cl_request:
 		return self._byterange
 
 
+class jag_log:
+	def __init__(self):
+		self.time = None
+
+		self.addr_info = (None, None)
+		self.method = None
+		self.httpver = None
+		self.path = None
+		self.usragent = None
+		self.ref = None
+
+	# send log to the logger
+	def push(self, port):
+		self.push = None
+
+		import socket, pickle
+		# connect to the logger and send logging data
+		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as skt:
+			skt.connect(('127.0.0.1', port))
+			pdata = pickle.dumps(self)
+			skt.sendall(len(pdata).to_bytes(4, 'little'))
+			skt.sendall(pdata)
+
+	def upd_request_info(self, cl_rq):
+		self.addr_info = cl_rq.cl_addr
+		self.method = cl_rq.method
+		self.httpver = cl_rq.protocol
+		self.path = cl_rq.trimpath
+		self.usragent = cl_rq.headers.get('user-agent')
+		self.ref = cl_rq.headers.get('referer')
 
 
 
@@ -951,12 +1011,13 @@ def base_room(cl_con, cl_addr, srv_res):
 		# Init timings
 		timing_api = server_timings()
 
+		# the amount of time it took to initialize this worker
 		timing_api.push_record(
 			('devtime', (time.time() - srv_res.devtime)*1000),
 			_internal=True
 		)
 
-		# todo: Shouldn't the class take this as an argument?
+		# todo: Shouldn't the timing class take this as an argument?
 		if srv_res.cfg['enable_web_timing_api']:
 			timing_api.enable_in_response(True)
 
@@ -964,6 +1025,8 @@ def base_room(cl_con, cl_addr, srv_res):
 		# important todo: is this even needed?
 		with timing_api.record('lib_cache', _internal=True):
 			srv_res.reload_libs()
+
+		timing_api.log.time = srv_res.pylib.datetime.datetime.now()
 
 		# Evaluate the request
 		with timing_api.record('rq_eval', _internal=True):
@@ -990,7 +1053,10 @@ def base_room(cl_con, cl_addr, srv_res):
 				evaluated_request.response,
 				evaluated_request.response.offered_services
 			)
-
+	except ConnectionAbortedError as err:
+		_rebind('Connection was aborted by the client')
+	except ConnectionResetError as err:
+		_rebind('Connection was reset by the client')
 	except Exception as err:
 
 		conlog(
@@ -1003,7 +1069,6 @@ def base_room(cl_con, cl_addr, srv_res):
 			)
 		)
 
-
 		_trback = ''.join(
 			traceback.format_exception(
 				type(err),
@@ -1011,6 +1076,7 @@ def base_room(cl_con, cl_addr, srv_res):
 				err.__traceback__
 			)
 		)
+
 		cl_con.sendall('HTTP/1.1 500 Internal Server Error\r\n'.encode())
 		_rcontent = f"""<!DOCTYPE HTML>
 			<html>
@@ -1030,7 +1096,23 @@ def base_room(cl_con, cl_addr, srv_res):
 
 		raise err
 
+	# write log
+	_ = time.time()
+	try:
+		timing_api.log.push(srv_res.cfg['logging']['port'])
+	except Exception as err:
+		_rebind(
+			''.join(
+				traceback.format_exception(
+					type(err),
+					err,
+					err.__traceback__
+				)
+			)
+		)
+	_rebind('Logging took', (time.time() - _)*1000)
 
+	_rebind('        Exiting...', evaluated_request.cl_addr[1])
 	cl_con.close()
 	sys.exit()
 

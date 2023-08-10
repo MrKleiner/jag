@@ -1,4 +1,4 @@
-import socket, threading, time, sys, hashlib, json, base64, struct, io, multiprocessing, os
+import socket, threading, time, sys, hashlib, json, base64, struct, io, multiprocessing, os, datetime
 from pathlib import Path
 import traceback
 
@@ -95,8 +95,11 @@ class server_info:
 		from pathlib import Path
 		import io
 		import jag_util
+		import platform
 
 		self.devtime = 0
+
+		self.tstamp = None
 
 		config = init_config or {}
 
@@ -157,7 +160,7 @@ class server_info:
 		self.cfg['dir_listing'] = {
 			'enabled': False,
 			'dark_theme': False,
-		} | (config.get('dir_listing') or {})
+		} | (config.get('dir_listing', {}))
 
 
 
@@ -179,7 +182,7 @@ class server_info:
 			# Wether to trigger the callback function
 			# when incoming request is trying to access the static CDN
 			'skip_callback': True,
-		} | (config.get('static_cdn') or {})
+		} | (config.get('static_cdn', {}))
 
 		self.cdn_path = None
 		self.cdn_cache = {}
@@ -204,7 +207,33 @@ class server_info:
 			# Default size of a single chunk when streaming buffers
 			# Default to 5mb
 			'bufstream_chunk_len': (1024**2)*5,
-		} | (config.get('buffers') or {})
+		} | (config.get('buffers', {}))
+
+
+		# 
+		# Logging
+		# 
+		logdir_selector = {
+			'linux': Path('/var/log/jag'),
+			'windows': Path(Path.home() / 'AppData' / 'Roaming' / 'jag' / 'log'),
+		}
+		self.cfg['logging'] = {
+			# whether to enable file logging feature or not
+			'enabled': True,
+
+			# path to the folder where logs are stored
+			# Linux default: /var/log/jag
+			# Windows default: %appdata%/Roaming/jag/log
+			'logs_dir': None,
+
+			# The RPC port of the logger
+			'port': None,
+		} | (config.get('logging', {}))
+
+		# ensure the folder exists
+		if self.cfg['logging']['logs_dir'] == None:
+			self.cfg['logging']['logs_dir'] = logdir_selector[platform.system().lower()]
+			self.cfg['logging']['logs_dir'].mkdir(parents=True, exist_ok=True)
 
 
 	def reload_libs(self):
@@ -215,25 +244,25 @@ class server_info:
 
 
 
-
-def sock_server(sv_cfg):
-	# Preload resources n stuff
-	print(_server_proc, 'Preloading resources... (4/7)')
-	server_resources = server_info(sv_cfg)
+def sock_server(sv_resources):
 	print(_server_proc, 'Binding server to a port... (5/7)')
 	# Port to run the server on
 	# port = 56817
-	port = server_resources.cfg['port']
+	port = sv_resources.cfg['port']
 	# Create the Server object
-	s = socket.socket()
+	skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 	# Bind server to the specified port. 0 = Find the closest free port and run stuff on it
 	# todo: is this really the only way to bind stuff to the current IP ?
-	_get_ip_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-	_get_ip_s.connect(('8.8.8.8', 0))
-	current_ip = _get_ip_s.getsockname()[0]
-	s.bind(
-		(current_ip, port)
+	"""
+	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _skt_get_ip:
+		_skt_get_ip.connect(('8.8.8.8', 0))
+		# _skt_get_ip.connect(('10.255.255.255', 1))
+		current_ip = _skt_get_ip.getsockname()[0]
+	"""
+
+	skt.bind(
+		(jag_util.get_current_ip(), port)
 	)
 
 	# Basically launch the server
@@ -241,57 +270,71 @@ def sock_server(sv_cfg):
 	# If the amount of connections exceeds this limit -
 	# connections become rejected till other ones are resolved (aka closed)
 	# 0 = infinite
-	s.listen(server_resources.cfg['max_connections'])
+	skt.listen(sv_resources.cfg['max_connections'])
 
-	print(_server_proc, 'Server listening on port (6/7)', s.getsockname()[1])
+	print(_server_proc, 'Server listening on port (6/7)', skt.getsockname()[1])
 
-	# important todo: does this actually slow the shit down?
-	# important todo: is it just me or this crashes the system ???!!?!??!?!?!?!?
-	# important todo: this creates a bunch of threads as a side effect
-	# important todo: Pickling is EXTREMELY slow and bad
-
-	# Multiprocess pool automatically takes care of a bunch of stuff
-	# But most importantly, it takes care of shadow processess left after collapsed rooms
-	# (linux moment)
-
-	# EXCEPT, process pool is garbage: It's a pool with a fixed amount of workers,
-	# where tasks are distributed between them. Shit
-	# EXCEPT, the amount of workes can be specified manually
-	with multiprocessing.Pool(server_resources.cfg['pool_size']) as pool:
+	# important todo: as of now this is the only reliable way of having
+	# separate unrelated rooms.
+	# The pool consists of a pre-defined amount of workers.
+	# The more workers - the better.
+	# On windows each worker takes ~8mb RAM, while on Linux it's next to nothing.
+	"""
+	with multiprocessing.Pool(sv_resources.cfg['pool_size']) as pool:
 		print(_server_proc, 'Accepting connections... (7/7)')
 		while True:
 			print('Waiting for requests...')
-			# conlog('Entering the main listen cycle which would spawn rooms upon incoming connection requests...', echo=_server_proc)
-			# Try establishing connection, nothing below this line gets executed
+			# Try establishing connection. Nothing below this line gets executed
 			# until server receives a new connection
-			conn, address = s.accept()
+			conn, address = skt.accept()
 			# conlog('Got connection, spawning a room. Client info:', address, echo=_server_proc)
 			# Create a basic room
-			server_resources.devtime = time.time()
-			pool.apply_async(base_room, (conn, address, server_resources))
+			sv_resources.devtime = time.time()
+			sv_resources.tstamp = datetime.datetime.now()
+			pool.apply_async(base_room, (conn, address, sv_resources))
 			print('    Got request, forwarding...')
-			# conlog('Spawned a room, continue accepting new connections', echo=_server_proc)
-			# poot = multiprocessing.Process(target=base_room, args=(conn, address, server_resources,), daemon=True).start()
-			# with perftest('      Forking...'):
-			# 	multiprocessing.Process(target=base_room, args=(conn, address, server_resources,), daemon=True).start()
-			# 	multiprocessing.Process(target=base_room, args=(conn, address, server_resources), daemon=True).start()
-			# 	multiprocessing.Process(target=base_room, args=(conn, address, 'sex')).start()
-			# 	pool.apply_async(base_room, (conn, address, server_resources))
-			# 	pool.apply_async(base_room, (conn, address, server_resources))
+	"""
+	print(_server_proc, 'Accepting connections... (7/7)')
+	while True:
+		conn, address = skt.accept()
+		sv_resources.devtime = time.time()
+		threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
 
 
 
+def logger_process(sv_resources, sock_obj):
+	import jag_logging
+	jag_logging.gestapo(sv_resources, sock_obj)
 
-def server_process(srv_params, stfu=False):
-	print(_main_init, 'Creating and starting the server process... (1/7)')
+
+
+def server_process(launch_params, stfu=False):
+	# Preload resources n stuff
+	print('Initializing resources... (1/7)')
+	sv_resources = server_info(launch_params)
+
+	# logging
+	if sv_resources.cfg['logging']['enabled']:
+		print('Winding up logging (1.1/7)...')
+
+		# reserve a port for the logger
+		logging_socket = socket.socket()
+		logging_socket.bind(('127.0.0.1', 0))
+		sv_resources.cfg['logging']['port'] = logging_socket.getsockname()[1]
+		
+		# create and launch the logger process
+		logger_ctrl = multiprocessing.Process(target=logger_process, args=(sv_resources, logging_socket))
+		logger_ctrl.start()
+
+	print('Creating and starting the server process... (2/7)')
 	# Create a new process containing the main incoming connections listener
-	server_ctrl = multiprocessing.Process(target=sock_server, args=(srv_params,))
-	print(_main_init, 'Created the process instructions, attempting launch... (2/7)')
+	server_ctrl = multiprocessing.Process(target=sock_server, args=(sv_resources,))
+	print('Created the process instructions, launching... (3/7)')
 	# Initialize the created process
 	# (It's not requred to create a new variable, it could be done in 1 line with .start() in the end)
 	server_ctrl.start()
 
-	print(_main_init, 'Launched the server process... (3/7)')
+	print(_main_init, 'Launched the server process... (4/7)')
 
 
 
