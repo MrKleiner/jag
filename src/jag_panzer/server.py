@@ -11,9 +11,6 @@ import jag_util
 
 from easy_timings.mstime import perftest
 
-_main_init = '[root]'
-_server_proc = '[Server Process]'
-
 
 
 # Path
@@ -29,7 +26,10 @@ _server_proc = '[Server Process]'
 # io
 # multiprocessing
 class pylib_preload:
-	"""precache python libraries"""
+	"""
+	Precache python libraries.
+	Cry all you want, but this reduces disk load
+	"""
 	def __init__(self):
 		import socket
 		import threading
@@ -90,12 +90,10 @@ class server_info:
 	def __init__(self, init_config=None):
 		from mimes.mime_types_base import base_mimes
 		from mimes.mime_types_base import base_mimes_signed
-		from response_codes import codes as _rcodes
+		from response_codes import codes as http_response_codes
 
 		from pathlib import Path
-		import io
-		import jag_util
-		import platform
+		import jag_util, io, platform
 
 		self.devtime = 0
 
@@ -116,9 +114,9 @@ class server_info:
 		}
 
 		# HTTP response codes
-		self.response_codes = _rcodes
+		self.response_codes = http_response_codes
 
-		# Reject document precache
+		# Reject html document precache
 		self.reject_precache = (self.sysroot / 'assets' / 'reject.html').read_bytes()
 
 
@@ -213,12 +211,16 @@ class server_info:
 		# 
 		# Logging
 		# 
+
+		# default log dirs
 		logdir_selector = {
 			'linux': Path('/var/log/jag'),
 			'windows': Path(Path.home() / 'AppData' / 'Roaming' / 'jag' / 'log'),
 		}
 		self.cfg['logging'] = {
 			# whether to enable file logging feature or not
+			# this does not prevent the logging server from starting
+			# log messages are simply not being sent to the server
 			'enabled': True,
 
 			# path to the folder where logs are stored
@@ -230,7 +232,7 @@ class server_info:
 			'port': None,
 		} | (config.get('logging', {}))
 
-		# ensure the folder exists
+		# ensure the de3fault folder exists
 		if self.cfg['logging']['logs_dir'] == None:
 			self.cfg['logging']['logs_dir'] = logdir_selector[platform.system().lower()]
 			self.cfg['logging']['logs_dir'].mkdir(parents=True, exist_ok=True)
@@ -243,7 +245,7 @@ class server_info:
 
 
 
-
+_server_proc = '[Server Process]'
 def sock_server(sv_resources):
 	print(_server_proc, 'Binding server to a port... (5/7)')
 	# Port to run the server on
@@ -308,28 +310,33 @@ def logger_process(sv_resources, sock_obj):
 
 
 
+_main_init = '[root]'
 def server_process(launch_params, stfu=False):
+	os.environ['_jag-dev-lvl'] = '1'
+
 	# Preload resources n stuff
-	print('Initializing resources... (1/7)')
+	print(_main_init, 'Initializing resources... (1/7)')
 	sv_resources = server_info(launch_params)
 
 	# logging
+	os.environ['jag_logging_port'] = 'False'
 	if sv_resources.cfg['logging']['enabled']:
-		print('Winding up logging (1.1/7)...')
+		print(_main_init, 'Winding up logging (1.1/7)...')
 
 		# reserve a port for the logger
 		logging_socket = socket.socket()
 		logging_socket.bind(('127.0.0.1', 0))
 		sv_resources.cfg['logging']['port'] = logging_socket.getsockname()[1]
+		os.environ['jag_logging_port'] = str(sv_resources.cfg['logging']['port'])
 		
 		# create and launch the logger process
 		logger_ctrl = multiprocessing.Process(target=logger_process, args=(sv_resources, logging_socket))
 		logger_ctrl.start()
 
-	print('Creating and starting the server process... (2/7)')
+	print(_main_init, 'Creating and starting the server process... (2/7)')
 	# Create a new process containing the main incoming connections listener
 	server_ctrl = multiprocessing.Process(target=sock_server, args=(sv_resources,))
-	print('Created the process instructions, launching... (3/7)')
+	print(_main_init, 'Created the process instructions, launching... (3/7)')
 	# Initialize the created process
 	# (It's not requred to create a new variable, it could be done in 1 line with .start() in the end)
 	server_ctrl.start()

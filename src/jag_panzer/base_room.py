@@ -1,19 +1,24 @@
+from jag_util import dict_pretty_print, print_exception, traceback_to_text
+
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).parent))
 
+from jag_logging import logRecord
 
 
-from jag_util import dict_pretty_print
 
 
 _room_echo = '[Request Evaluator]'
 _rebind = print
-
-
 def conlog(*args):
 	return
 	print(_room_echo, *args)
+
+def print(*args):
+	return
+
+
 
 
 def _default_room(request, response, services):
@@ -44,14 +49,7 @@ def _default_room(request, response, services):
 
 
 	# otherwise - reject
-	request.reject()
-
-def debg(*args):
-	print(*args)
-
-def print(*args):
-	return
-
+	request.reject(405)
 
 
 class perfrec:
@@ -116,8 +114,6 @@ class server_timings:
 		# Whether to include internal Jag timings or not
 		self.header_incl_jag = False
 
-		self.log = jag_log()
-
 
 	def enable_in_response(self, include_jag_timings=False):
 		"""
@@ -161,6 +157,9 @@ class server_timings:
 			return ', '.join(records)
 		else:
 			return f"""Server-Timings: {', '.join(records)}"""
+
+
+
 
 
 class sv_services:
@@ -624,7 +623,6 @@ class cl_request:
 		self.cl_addr = cl_addr
 		self.srv_res = srv_res
 		self.timings = timing_api
-		self.log = timing_api.log
 
 		self.headers = {}
 
@@ -646,7 +644,6 @@ class cl_request:
 		# It's client's responsibility to perform good requests
 		try:
 			self._eval_request()
-			self.log.upd_request_info(self)
 		except Exception as e:
 			self.reject(400)
 			raise e
@@ -962,39 +959,6 @@ class cl_request:
 		return self._byterange
 
 
-class jag_log:
-	def __init__(self):
-		self.time = None
-
-		self.addr_info = (None, None)
-		self.method = None
-		self.httpver = None
-		self.path = None
-		self.usragent = None
-		self.ref = None
-
-	# send log to the logger
-	def push(self, port):
-		self.push = None
-
-		import socket, pickle
-		# connect to the logger and send logging data
-		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as skt:
-			skt.connect(('127.0.0.1', port))
-			pdata = pickle.dumps(self)
-			skt.sendall(len(pdata).to_bytes(4, 'little'))
-			skt.sendall(pdata)
-
-	def upd_request_info(self, cl_rq):
-		self.addr_info = cl_rq.cl_addr
-		self.method = cl_rq.method
-		self.httpver = cl_rq.protocol
-		self.path = cl_rq.trimpath
-		self.usragent = cl_rq.headers.get('user-agent')
-		self.ref = cl_rq.headers.get('referer')
-
-
-
 
 # The server creates "rooms" for every incoming connection.
 # The Base Room does some setup, like evaluating the request.
@@ -1003,11 +967,19 @@ class jag_log:
 # without any automatic actions
 # If callback function is NOT specified, then server provides
 # Some of its default services
-def base_room(cl_con, cl_addr, srv_res):
-	import sys, traceback, time
-	import importlib.util
 
+# Yes, this is a function, not a class. Cry
+def base_room(cl_con, cl_addr, srv_res):
+	import time
+	import importlib.util
+	from easy_timings.mstime import perftest
+
+	jag_error = True
 	try:
+		# ----------------
+		# Setup
+		# ----------------
+
 		# Init timings
 		timing_api = server_timings()
 
@@ -1026,7 +998,9 @@ def base_room(cl_con, cl_addr, srv_res):
 		with timing_api.record('lib_cache', _internal=True):
 			srv_res.reload_libs()
 
-		timing_api.log.time = srv_res.pylib.datetime.datetime.now()
+		request_log = {
+			'time': srv_res.pylib.datetime.datetime.now(),
+		}
 
 		# Evaluate the request
 		with timing_api.record('rq_eval', _internal=True):
@@ -1034,30 +1008,76 @@ def base_room(cl_con, cl_addr, srv_res):
 
 		conlog('Initialized basic room, evaluated request')
 
+
+
+		# ----------------
+		# Execute action
+		# ----------------
+
 		# Now either pass the control to the room specified in the config
 		# or the default room
 		if srv_res.cfg['room_file']:
-			with timing_api.record('spec', _internal=True):
-				spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
-				custom_func = importlib.util.module_from_spec(spec)
-				spec.loader.exec_module(custom_func)
+			try:
+				with timing_api.record('spec', _internal=True):
+					spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
+					custom_func = importlib.util.module_from_spec(spec)
+					spec.loader.exec_module(custom_func)
 
-			custom_func.main(
-				evaluated_request,
-				evaluated_request.response,
-				evaluated_request.response.offered_services
-			)
+				custom_func.main(
+					evaluated_request,
+					evaluated_request.response,
+					evaluated_request.response.offered_services
+				)
+			except ConnectionAbortedError as err:
+				_rebind('Connection was aborted by the client')
+			except ConnectionResetError as err:
+				_rebind('Connection was reset by the client')
+			except Exception as room_e:
+				# This is no longer jag's fault
+				jag_error = False
+
+				err_rec = logRecord(3, traceback_to_text(room_e))
+				err_rec.push()
+
+				# print_exception(room_e)
+
+				raise room_e
 		else:
 			_default_room(
 				evaluated_request,
 				evaluated_request.response,
 				evaluated_request.response.offered_services
 			)
+
+		# ----------------
+		# Write Log
+		# ----------------
+		with perftest('Room logging took'):
+			ev_rq = evaluated_request
+
+			# connection log
+			upd_rec_data = {
+				'addr_info': ev_rq.cl_addr,
+				'method': ev_rq.method,
+				'httpver': ev_rq.protocol,
+				'path': ev_rq.trimpath,
+				'usragent': ev_rq.headers.get('user-agent'),
+				'ref': ev_rq.headers.get('referer'),
+				'rsp_code': ev_rq.response.code,
+			}
+
+			# create log record class
+			lrec = logRecord(1, request_log | upd_rec_data)
+			# send record to the logging server
+			lrec.push()
+
+
 	except ConnectionAbortedError as err:
 		_rebind('Connection was aborted by the client')
 	except ConnectionResetError as err:
 		_rebind('Connection was reset by the client')
 	except Exception as err:
+		import traceback
 
 		conlog(
 			''.join(
@@ -1094,25 +1114,19 @@ def base_room(cl_con, cl_addr, srv_res):
 		cl_con.sendall(f'Content-Length: {len(_rcontent)}\r\n\r\n'.encode())
 		cl_con.sendall(_rcontent.encode())
 
+		# This is purely an internal jag error
+		# Do not log room errors
+		if jag_error:
+			err_rec = logRecord(2, traceback_to_text(err))
+			err_rec.push()
+
 		raise err
 
-	# write log
-	_ = time.time()
-	try:
-		timing_api.log.push(srv_res.cfg['logging']['port'])
-	except Exception as err:
-		_rebind(
-			''.join(
-				traceback.format_exception(
-					type(err),
-					err,
-					err.__traceback__
-				)
-			)
-		)
-	_rebind('Logging took', (time.time() - _)*1000)
 
-	_rebind('        Exiting...', evaluated_request.cl_addr[1])
+	import sys
+	# _rebind('        Exiting...', evaluated_request.cl_addr[1])
+
+	# cl_con.shutdown(2)
 	cl_con.close()
 	sys.exit()
 

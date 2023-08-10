@@ -1,4 +1,9 @@
 
+# What an actual fuck are some of these mimes?
+
+
+
+
 base_mimes = {
 	'bin':    'application/octet-stream',
 	'mov':    'video/quicktime',
