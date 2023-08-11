@@ -289,12 +289,12 @@ def processor(log_ctrl):
 
 		# if the queue is empty - wait 1 second and try again
 		if len(log_ctrl.queue) <= 0:
-			time.sleep(3)
+			time.sleep(1)
 
 		# spawning a process for every record is absolutely terrible
 		# collect a number of records and process them in groups
 		log_batch = []
-		for idx in range(jag_util.clamp(len(log_ctrl.queue), 0, 32)):
+		for idx in range(jag_util.clamp(len(log_ctrl.queue), 0, 64)):
 			# first 4 bytes are garbage data, skip them
 			log_ctrl.queue[0].seek(4, 0)
 

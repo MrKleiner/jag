@@ -1,3 +1,14 @@
+import os
+
+def conlog(*args, loglvl=1, exact=False):
+	env_lvl = int(os.environ['_jag-dev-lvl'])
+	if exact and loglvl == env_lvl:
+		print(*args)
+		return
+
+	if env_lvl >= loglvl:
+		print(*args)
+
 
 
 def dict_pretty_print(d):

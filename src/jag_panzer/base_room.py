@@ -1,23 +1,46 @@
-from jag_util import dict_pretty_print, print_exception, traceback_to_text
+from jag_util import dict_pretty_print, print_exception, traceback_to_text, conlog
 
-from pathlib import Path
-import sys
-sys.path.append(str(Path(__file__).parent))
+# from pathlib import Path
+# import sys
+# sys.path.append(str(Path(__file__).parent))
 
 from jag_logging import logRecord
 
-
-
-
 _room_echo = '[Request Evaluator]'
+
 _rebind = print
-def conlog(*args):
-	return
-	print(_room_echo, *args)
 
-def print(*args):
-	return
 
+def echo_exception_to_client(err, con):
+	import traceback
+
+	try:
+		trback = ''.join(
+			traceback.format_exception(
+				type(err),
+				err,
+				err.__traceback__
+			)
+		)
+	except Exception as e:
+		trback = f'Jag critical error: {err}'
+
+	con.sendall('HTTP/1.1 500 Internal Server Error\r\n'.encode())
+	response_content = f"""<!DOCTYPE HTML>
+		<html>
+			<head>
+				<meta http-equiv="Content-Type" content="text/html;charset=utf-8">
+				<title>Rejected</title>
+			</head>
+			<body>
+				<h1 style="border-left: 2px #9F2E25;">500 Internal Server Error</h1>
+				<h3>Server: Jag</h3>
+				<p style="white-space: pre;">{trback}</p>
+			</body>
+		</html>
+	"""
+	con.sendall(f'Content-Length: {len(response_content)}\r\n\r\n'.encode())
+	con.sendall(response_content.encode())
 
 
 
@@ -52,6 +75,7 @@ def _default_room(request, response, services):
 	request.reject(405)
 
 
+# utility class returned by server_timings.record
 class perfrec:
 	def __init__(self, sv_timings, msg='perftest', _internal=False, noreport=False):
 		"""
@@ -643,7 +667,7 @@ class cl_request:
 		# Why bother?
 		# It's client's responsibility to perform good requests
 		try:
-			self._eval_request()
+			self.eval_request()
 		except Exception as e:
 			self.reject(400)
 			raise e
@@ -652,9 +676,8 @@ class cl_request:
 	# Init
 	# =================
 
-	# Keep eating bytes from the client
-	# until the entire Request Header arrives
-	def collect_head_buf(self):
+	# Obsolete
+	def _collect_head_buf(self):
 
 		io = self.srv_res.pylib.io
 
@@ -710,9 +733,39 @@ class cl_request:
 
 			if self.head_buf.tell() >= self.srv_res.cfg['buffers']['max_header_len']:
 				self.response.reject(431)
+				break
+
+
+	# Keep eating bytes from the client
+	# until the entire Request Header arrives
+	def collect_head_buf(self):
+		read_limit = self.srv_res.cfg['buffers']['max_header_len']
+		# bufsize = 0
+		self.header_fields = []
+
+		rfile = self.cl_con.makefile('rb', newline=b'\r\n')
+		conlog('created virtual file')
+		while True:
+			if read_limit <= 0:
+				self.reject(431)
+				break
+			line = rfile.readline(read_limit)
+			conlog('read line', line)
+
+			# it's important to also count \r\n\t etc.
+			read_limit -= len(line)
+
+			# encountered end of the header fields
+			if line == b'\r\n':
+				conlog('Encountered fields end', line)
+				break
+
+			# append field to the buffer
+			self.header_fields.append(line.decode().strip())
+
 
 	# Request evaluation has a dedicated function for easier error handling
-	def _eval_request(self):
+	def eval_request(self):
 		# io = self.srv_res.pylib.io
 		# sys = self.srv_res.pylib.sys
 		urllib = self.srv_res.pylib.urllib
@@ -726,16 +779,17 @@ class cl_request:
 
 		with self.timings.record('eval_hbuf', _internal=True):
 			# raw bytes of the header
-			header_data = self.head_buf.getvalue()
-			conlog(header_data.decode())
+			# header_data = self.head_buf.getvalue()
+			# conlog(header_data.decode())
 
 			# split header into lines
-			header_data = header_data.decode().split('\r\n')
-			conlog('\n'.join(header_data))
+			# header_data = header_data.decode().split('\r\n')
+			header_fields = self.header_fields
+			conlog('\n'.join(header_fields))
 
-			# First line of the header is always the request method, path and http version
+			# First line of the header is always [>request method< >path< >http version<]
 			# It's up to the client to send valid data
-			self.method, self.path, self.protocol = header_data[0].split(' ')
+			self.method, self.path, self.protocol = header_fields[0].split(' ')
 			conlog(self.method, self.path, self.protocol)
 			self.method = self.method.lower()
 
@@ -745,6 +799,7 @@ class cl_request:
 			# important todo: lazy processing
 			# first - evaluate query params
 			self.query_params = {k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
+			conlog('Url params:', self.query_params)
 
 			# then, evaluate path
 			decoded_url_path = urllib.parse.unquote(parsed_url.path)
@@ -753,11 +808,11 @@ class cl_request:
 			self.trimpath = decoded_url_path
 
 			# Delete the first line as it's no longer needed
-			del header_data[0]
+			del header_fields[0]
 
 			# parse the remaining headers into a dict
 			request_dict = {}
-			for line in header_data:
+			for line in header_fields:
 				# skip empty stuff
 				if line.strip() == '':
 					continue
@@ -768,6 +823,9 @@ class cl_request:
 
 			self.headers = request_dict
 
+
+		# make sure this function doesn't trigger twice
+		self.eval_request = lambda: None
 
 
 	# Actions
@@ -820,7 +878,6 @@ class cl_request:
 		comparator = '/' + self.relpath.as_posix()
 
 		for rpath, func in action_dict:
-			# print(rpath, 'startswith', )
 			if comparator.startswith(rpath):
 				if trim_path:
 					self.trimpath = self.srv_res.pylib.Path(comparator.lstrip(rpath))
@@ -974,7 +1031,6 @@ def base_room(cl_con, cl_addr, srv_res):
 	import importlib.util
 	from easy_timings.mstime import perftest
 
-	jag_error = True
 	try:
 		# ----------------
 		# Setup
@@ -1017,31 +1073,16 @@ def base_room(cl_con, cl_addr, srv_res):
 		# Now either pass the control to the room specified in the config
 		# or the default room
 		if srv_res.cfg['room_file']:
-			try:
-				with timing_api.record('spec', _internal=True):
-					spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
-					custom_func = importlib.util.module_from_spec(spec)
-					spec.loader.exec_module(custom_func)
+			with timing_api.record('spec', _internal=True):
+				spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
+				custom_func = importlib.util.module_from_spec(spec)
+				spec.loader.exec_module(custom_func)
 
-				custom_func.main(
-					evaluated_request,
-					evaluated_request.response,
-					evaluated_request.response.offered_services
-				)
-			except ConnectionAbortedError as err:
-				_rebind('Connection was aborted by the client')
-			except ConnectionResetError as err:
-				_rebind('Connection was reset by the client')
-			except Exception as room_e:
-				# This is no longer jag's fault
-				jag_error = False
-
-				err_rec = logRecord(3, traceback_to_text(room_e))
-				err_rec.push()
-
-				# print_exception(room_e)
-
-				raise room_e
+			custom_func.main(
+				evaluated_request,
+				evaluated_request.response,
+				evaluated_request.response.offered_services
+			)
 		else:
 			_default_room(
 				evaluated_request,
@@ -1073,12 +1114,11 @@ def base_room(cl_con, cl_addr, srv_res):
 
 
 	except ConnectionAbortedError as err:
-		_rebind('Connection was aborted by the client')
+		conlog('Connection was aborted by the client')
 	except ConnectionResetError as err:
-		_rebind('Connection was reset by the client')
+		cpnlog('Connection was reset by the client')
 	except Exception as err:
 		import traceback
-
 		conlog(
 			''.join(
 				traceback.format_exception(
@@ -1089,42 +1129,16 @@ def base_room(cl_con, cl_addr, srv_res):
 			)
 		)
 
-		_trback = ''.join(
-			traceback.format_exception(
-				type(err),
-				err,
-				err.__traceback__
-			)
-		)
+		echo_exception_to_client(err, cl_con)
 
-		cl_con.sendall('HTTP/1.1 500 Internal Server Error\r\n'.encode())
-		_rcontent = f"""<!DOCTYPE HTML>
-			<html>
-				<head>
-					<meta http-equiv="Content-Type" content="text/html;charset=utf-8">
-					<title>Rejected</title>
-				</head>
-				<body>
-					<h1 style="border-left: 2px #9F2E25;">500 Internal Server Error</h1>
-					<h3>Server: Jag</h3>
-					<p style="white-space: pre;">{_trback}</p>
-				</body>
-			</html>
-		"""
-		cl_con.sendall(f'Content-Length: {len(_rcontent)}\r\n\r\n'.encode())
-		cl_con.sendall(_rcontent.encode())
-
-		# This is purely an internal jag error
-		# Do not log room errors
-		if jag_error:
-			err_rec = logRecord(2, traceback_to_text(err))
-			err_rec.push()
+		err_rec = logRecord(2, traceback_to_text(err))
+		err_rec.push()
 
 		raise err
 
 
 	import sys
-	# _rebind('        Exiting...', evaluated_request.cl_addr[1])
+	# conlog('        Exiting...', evaluated_request.cl_addr[1])
 
 	# cl_con.shutdown(2)
 	cl_con.close()

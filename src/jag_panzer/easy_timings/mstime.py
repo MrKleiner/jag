@@ -1,10 +1,16 @@
 
 
 class perftest:
-	def __init__(self, msg='Perftest: ', ms=True, as_return=False, log_lvl=1):
+	def __init__(self, msg='Perftest: ', ms=True, as_return=False, log_lvl=1, cpu_t=False):
+		"""
+		msg = text message to print/return
+		ms = return time in milliseconds instead of seconds
+		log_lvl = log level required for the message to print
+		cpu_t = use time.process_time() instead of time.time()
+		"""
 		import time, os
 		self.time = time
-		self.start = time.time()
+		self.start = time.process_time() if cpu_t else time.time()
 		self.as_ms = True
 		self.msg = msg
 		self.as_return = as_return

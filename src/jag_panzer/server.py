@@ -312,7 +312,13 @@ def logger_process(sv_resources, sock_obj):
 
 _main_init = '[root]'
 def server_process(launch_params, stfu=False):
-	os.environ['_jag-dev-lvl'] = '1'
+	os.environ['_jag-dev-lvl'] = '0'
+
+	# try overriding dev level
+	try:
+		os.environ['_jag-dev-lvl'] = str(int(launch_params['console_echo_level']))
+	except Exception as e:
+		pass
 
 	# Preload resources n stuff
 	print(_main_init, 'Initializing resources... (1/7)')
