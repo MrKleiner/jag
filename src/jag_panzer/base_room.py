@@ -640,6 +640,46 @@ class sv_response:
 
 
 
+# This is a very risky move
+class headerFields:
+	"""
+	- cl_con - client connection.
+	- maxsize - max size of the header fields in bytes
+	"""
+	def __init__(self, cl_con, maxsize=65535):
+		self.cl_con = cl_con
+		self.maxsize = 65535
+		self.lines = []
+
+	def collect(self):
+		maxsize = self.maxsize
+
+		rfile = self.cl_con.makefile('rb', newline=b'\r\n')
+		conlog('created virtual file')
+		while True:
+			if maxsize <= 0:
+				# self.reject(431)
+				# is this ok ?
+				return False
+				break
+			line = rfile.readline(maxsize)
+			conlog('read line', line)
+
+			# it's important to also count \r\n\t etc.
+			maxsize -= len(line)
+
+			# encountered end of the header fields
+			if line == b'\r\n':
+				conlog('Encountered fields end', line)
+				break
+
+			# append field to the buffer
+			self.lines.append(line.decode().strip())
+
+
+
+
+
 
 class cl_request:
 	def __init__(self, cl_con, cl_addr, srv_res, timing_api):
@@ -647,6 +687,8 @@ class cl_request:
 		self.cl_addr = cl_addr
 		self.srv_res = srv_res
 		self.timings = timing_api
+
+		self.terminated = False
 
 		self.headers = {}
 
@@ -656,7 +698,7 @@ class cl_request:
 		with self.timings.record('rsp_class_init', _internal=True):
 			self.response = sv_response(self, cl_con, srv_res)
 
-		# Some widely-used headers are lazily processed
+		# Some commonly-used headers are lazy processed
 		# for easier use
 		self._cookie = None
 		self._cache_control = None
@@ -735,34 +777,7 @@ class cl_request:
 				self.response.reject(431)
 				break
 
-
-	# Keep eating bytes from the client
-	# until the entire Request Header arrives
-	def collect_head_buf(self):
-		read_limit = self.srv_res.cfg['buffers']['max_header_len']
-		# bufsize = 0
-		self.header_fields = []
-
-		rfile = self.cl_con.makefile('rb', newline=b'\r\n')
-		conlog('created virtual file')
-		while True:
-			if read_limit <= 0:
-				self.reject(431)
-				break
-			line = rfile.readline(read_limit)
-			conlog('read line', line)
-
-			# it's important to also count \r\n\t etc.
-			read_limit -= len(line)
-
-			# encountered end of the header fields
-			if line == b'\r\n':
-				conlog('Encountered fields end', line)
-				break
-
-			# append field to the buffer
-			self.header_fields.append(line.decode().strip())
-
+	# collect_head_buf
 
 	# Request evaluation has a dedicated function for easier error handling
 	def eval_request(self):
@@ -774,7 +789,8 @@ class cl_request:
 		# Fully custom method of receiving the Request Header
 		# gives a lot of benefits (as well as causing mental retardation)
 		with self.timings.record('collect_hbuf', _internal=True):
-			self.collect_head_buf()
+			header_buffer = headerFields(self.cl_con, self.srv_res.cfg['buffers']['max_header_len'])
+			header_buffer.collect()
 
 
 		with self.timings.record('eval_hbuf', _internal=True):
@@ -784,7 +800,8 @@ class cl_request:
 
 			# split header into lines
 			# header_data = header_data.decode().split('\r\n')
-			header_fields = self.header_fields
+			# header_fields = self.header_fields
+			header_fields = header_buffer.lines
 			conlog('\n'.join(header_fields))
 
 			# First line of the header is always [>request method< >path< >http version<]
@@ -824,6 +841,22 @@ class cl_request:
 			self.headers = request_dict
 
 
+		# WSS
+		# important todo: there certainly is case-insesitive string lookup
+		if self.headers.get('upgrade') in ('websocket', 'Websocket', 'WEBSOCKET',):
+			if self.srv_res.cfg['websockets']['action'] == 'reject':
+				self.reject(403)
+				return
+
+			if self.srv_res.cfg['websockets']['action'] == 'redirect':
+				self.redirect(['websockets']['redirect_to'])
+				return
+
+			if self.srv_res.cfg['websockets']['action'] == 'accept':
+				# because this is not a wss server
+				self.reject(421)
+				return
+
 		# make sure this function doesn't trigger twice
 		self.eval_request = lambda: None
 
@@ -836,7 +869,7 @@ class cl_request:
 		socket = self.srv_res.pylib.socket
 		self.cl_con.shutdown(socket.SHUT_RDWR)
 		self.cl_con.close()
-
+		self.terminated = True
 		# Termination is only possible once
 		self.terminate = lambda: None
 
@@ -861,7 +894,7 @@ class cl_request:
 		# self.srv_res.response_codes.get
 		reason_picker = {code:(300+code) for code in range(7)}
 		self.response.code = reason_picker.get(reason, 307)
-		self.response.headers['Content-Location' if hardlink else 'Location'] = str(target)
+		self.response.headers['Location' if softlink else 'Content-Location'] = str(target)
 
 		self.response.send_preflight()
 		self.terminate()
@@ -1072,23 +1105,24 @@ def base_room(cl_con, cl_addr, srv_res):
 
 		# Now either pass the control to the room specified in the config
 		# or the default room
-		if srv_res.cfg['room_file']:
-			with timing_api.record('spec', _internal=True):
-				spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
-				custom_func = importlib.util.module_from_spec(spec)
-				spec.loader.exec_module(custom_func)
+		if not evaluated_request.terminated:
+			if srv_res.cfg['room_file']:
+				with timing_api.record('spec', _internal=True):
+					spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
+					custom_func = importlib.util.module_from_spec(spec)
+					spec.loader.exec_module(custom_func)
 
-			custom_func.main(
-				evaluated_request,
-				evaluated_request.response,
-				evaluated_request.response.offered_services
-			)
-		else:
-			_default_room(
-				evaluated_request,
-				evaluated_request.response,
-				evaluated_request.response.offered_services
-			)
+				custom_func.main(
+					evaluated_request,
+					evaluated_request.response,
+					evaluated_request.response.offered_services
+				)
+			else:
+				_default_room(
+					evaluated_request,
+					evaluated_request.response,
+					evaluated_request.response.offered_services
+				)
 
 		# ----------------
 		# Write Log

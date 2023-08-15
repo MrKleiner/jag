@@ -46,3 +46,25 @@ Transfer-Encoding: chunked
 
 0\r\n
 \r\n
+
+
+
+
+
+
+
+======= WSS incoming request sample =======
+
+GET / HTTP/1.1
+Host: 192.168.0.10:8027
+Connection: Upgrade
+Pragma: no-cache
+Cache-Control: no-cache
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36
+Upgrade: websocket
+Origin: http://192.168.0.10:8027
+Sec-WebSocket-Version: 13
+Accept-Encoding: gzip, deflate
+Accept-Language: en-US,en;q=0.9
+Sec-WebSocket-Key: PpaE2Nq4GcQwsPmAA8WCUw==
+Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
