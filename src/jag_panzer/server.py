@@ -99,6 +99,8 @@ class server_info:
 
 		self.tstamp = None
 
+		self.input_config = init_config or {}
+
 		config = init_config or {}
 
 		# root of the python package
@@ -143,6 +145,12 @@ class server_info:
 			# https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Server-Timing
 			'enable_web_timing_api': False,
 
+			# custom context, must be picklable if multiprocessing is used 
+			'context': None,
+
+			# whether to launch the server in a separate process or not
+			'multiprocessing': True,
+
 			# The name of the html file to serve when request path is '/'
 			'root_index': None,
 			'enable_indexes': True,
@@ -150,37 +158,43 @@ class server_info:
 		} | config
 
 		self.doc_root = Path(self.cfg['doc_root'])
+		self.context = self.cfg['context']
 
 
 		#
 		# Directory Listing
 		# 
-		self.cfg['dir_listing'] = {
-			'enabled': False,
-			'dark_theme': False,
-		} | (config.get('dir_listing', {}))
-
+		self.reg_cfg_group(
+			'dir_listing',
+			{
+				'enabled': False,
+				'dark_theme': False,
+			}
+		)
 
 
 		# 
 		# Advanced CDN serving
 		# 
-		self.cfg['static_cdn'] = {
-			# Path to the static CDN
-			# can point anywhere
-			'path': None,
-			# Relieve the filesystem stress by precaching items inside this folder
-			# only useful if folder contains a big amount of small files
-			'precache': True,
-			# An array of paths relative to the root cdn path
-			# to exclude from caching
-			'cache_exclude': [],
-			# Glob pattern for caching files, default to '*'
-			'pattern': None,
-			# Wether to trigger the callback function
-			# when incoming request is trying to access the static CDN
-			'skip_callback': True,
-		} | (config.get('static_cdn', {}))
+		self.reg_cfg_group(
+			'static_cdn',
+			{
+				# Path to the static CDN
+				# can point anywhere
+				'path': None,
+				# Relieve the filesystem stress by precaching items inside this folder
+				# only useful if folder contains a big amount of small files
+				'precache': True,
+				# An array of paths relative to the root cdn path
+				# to exclude from caching
+				'cache_exclude': [],
+				# Glob pattern for caching files, default to '*'
+				'pattern': None,
+				# Wether to trigger the callback function
+				# when incoming request is trying to access the static CDN
+				'skip_callback': True,
+			}
+		)
 
 		self.cdn_path = None
 		self.cdn_cache = {}
@@ -193,19 +207,22 @@ class server_info:
 		# 
 		# Buffer sizes
 		# 
-		self.cfg['buffers'] = {
-			# Max file size when serving a file through built-in server services
-			# Default to 8mb
-			'max_file_len': (1024**2)*8,
+		self.reg_cfg_group(
+			'buffers',
+			{
+				# Max file size when serving a file through built-in server services
+				# Default to 8mb
+				'max_file_len': (1024**2)*8,
 
-			# Max size of the header buffer
-			# Default to 512kb
-			'max_header_len': 1024*512,
+				# Max size of the header buffer
+				# Default to 512kb
+				'max_header_len': 1024*512,
 
-			# Default size of a single chunk when streaming buffers
-			# Default to 5mb
-			'bufstream_chunk_len': (1024**2)*5,
-		} | (config.get('buffers', {}))
+				# Default size of a single chunk when streaming buffers
+				# Default to 5mb
+				'bufstream_chunk_len': (1024**2)*5,
+			}
+		)
 
 
 		# 
@@ -217,20 +234,23 @@ class server_info:
 			'linux': Path('/var/log/jag'),
 			'windows': Path(Path.home() / 'AppData' / 'Roaming' / 'jag' / 'log'),
 		}
-		self.cfg['logging'] = {
-			# whether to enable file logging feature or not
-			# this does not prevent the logging server from starting
-			# log messages are simply not being sent to the server
-			'enabled': True,
+		self.reg_cfg_group(
+			'logging',
+			{
+				# whether to enable file logging feature or not
+				# this does not prevent the logging server from starting
+				# log messages are simply not being sent to the server
+				'enabled': True,
 
-			# path to the folder where logs are stored
-			# Linux default: /var/log/jag
-			# Windows default: %appdata%/Roaming/jag/log
-			'logs_dir': None,
+				# path to the folder where logs are stored
+				# Linux default: /var/log/jag
+				# Windows default: %appdata%/Roaming/jag/log
+				'logs_dir': None,
 
-			# The RPC port of the logger
-			'port': None,
-		} | (config.get('logging', {}))
+				# The RPC port of the logger
+				'port': None,
+			}
+		)
 
 		# ensure the de3fault folder exists
 		if self.cfg['logging']['logs_dir'] == None:
@@ -242,6 +262,9 @@ class server_info:
 		# preload python libraries
 		self.pylib = pylib_preload()
 
+
+	def reg_cfg_group(self, groupname, paramdict):
+		self.cfg[groupname] = paramdict | self.input_config.get(groupname, {})
 
 
 
@@ -276,26 +299,6 @@ def sock_server(sv_resources):
 
 	print(_server_proc, 'Server listening on port (6/7)', skt.getsockname()[1])
 
-	# important todo: as of now this is the only reliable way of having
-	# separate unrelated rooms.
-	# The pool consists of a pre-defined amount of workers.
-	# The more workers - the better.
-	# On windows each worker takes ~8mb RAM, while on Linux it's next to nothing.
-	"""
-	with multiprocessing.Pool(sv_resources.cfg['pool_size']) as pool:
-		print(_server_proc, 'Accepting connections... (7/7)')
-		while True:
-			print('Waiting for requests...')
-			# Try establishing connection. Nothing below this line gets executed
-			# until server receives a new connection
-			conn, address = skt.accept()
-			# conlog('Got connection, spawning a room. Client info:', address, echo=_server_proc)
-			# Create a basic room
-			sv_resources.devtime = time.time()
-			sv_resources.tstamp = datetime.datetime.now()
-			pool.apply_async(base_room, (conn, address, sv_resources))
-			print('    Got request, forwarding...')
-	"""
 	print(_server_proc, 'Accepting connections... (7/7)')
 	while True:
 		conn, address = skt.accept()
@@ -348,21 +351,6 @@ def server_process(launch_params, stfu=False):
 	server_ctrl.start()
 
 	print(_main_init, 'Launched the server process... (4/7)')
-
-
-
-
-if __name__ == '__main__':
-	server_params = {
-		'doc_root': r'E:\!webdesign\jag',
-		'port': 56817,
-		'dir_listing': {
-			'enabled': True,
-		},
-		# 'routes': _routes,
-	}
-	server_process(server_params)
-
 
 
 

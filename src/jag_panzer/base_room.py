@@ -1,8 +1,9 @@
-from jag_util import dict_pretty_print, print_exception, traceback_to_text, conlog
 
-# from pathlib import Path
-# import sys
-# sys.path.append(str(Path(__file__).parent))
+from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).parent))
+
+from jag_util import dict_pretty_print, print_exception, traceback_to_text, conlog
 
 from jag_logging import logRecord
 
@@ -849,7 +850,7 @@ class cl_request:
 				return
 
 			if self.srv_res.cfg['websockets']['action'] == 'redirect':
-				self.redirect(['websockets']['redirect_to'])
+				self.redirect(self.srv_res.cfg['websockets']['redirect_to'])
 				return
 
 			if self.srv_res.cfg['websockets']['action'] == 'accept':
@@ -1150,7 +1151,7 @@ def base_room(cl_con, cl_addr, srv_res):
 	except ConnectionAbortedError as err:
 		conlog('Connection was aborted by the client')
 	except ConnectionResetError as err:
-		cpnlog('Connection was reset by the client')
+		conlog('Connection was reset by the client')
 	except Exception as err:
 		import traceback
 		conlog(

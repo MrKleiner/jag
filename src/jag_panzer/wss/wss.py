@@ -186,7 +186,8 @@ from jag_util import clamp as clamp_num
 
 # use the first fastest algorithm for XORing
 # benchmarks:
-# XORing 80mb worth of content on an SBC (worst case scenario. Divide this by ~50 for XEON servers):
+# XORing 80mb worth of content on an SBC
+# (worst case scenario. Divide this by ~50 for XEON servers):
 # 
 #                               Max speed = not slower than regular SFTP + 
 #                                           absolute maximum achievable utilizing
@@ -210,7 +211,6 @@ class masking_algo:
 
 		# First - try the c implementation
 		try:
-			# aaaa
 			if 'linux' in platform_name:
 				from wss_boost.linux.websockets import speedups
 			else:
@@ -487,15 +487,14 @@ class wss_session:
 
 	# terminate session, close connection and terminate the room
 	def terminate(self, reason=b'piss'):
-		raise NotImplementedError()
-		print('terminating, because', reason)
-		self.connection.sendall(self.construct_frame(reason, 0x1))
-		# important todo: Raise an exception so that the room takes care of termination
+		# raise NotImplementedError()
+		# print('terminating, because', reason)
+		# self.connection.sendall(self.construct_frame(reason, 0x1))
 		self.connection.close()
-		self.sys.exit()
+		# self.sys.exit()
 
 	# Receive a message
-	def recv_message(self, as_stream=None, maxsize=None, chunksize=None):
+	def recv_message(self, as_stream:bool=None, maxsize:bool=None, chunksize:bool=None):
 		"""
 		Receive a message from the client.
 		- as_stream:bool=None 
@@ -518,70 +517,39 @@ class wss_session:
 		return msg_receiver.data_stream()
 
 	# Send a message
-	def send_message(self, data, chunksize=None, masked=None):
+	# Simply send a message, with no extra fuckery
+	def send_message(self, data, msg_type:str='binary', chunksize:bool=None, masked:bool=None):
+		"""
+		Send a WSS message
+		- data:bytes|buffer
+			Data to send.
+			If buffer is specified - chunksize is used
+		"""
+		masked = masked if masked != None else self.defaults.masked_response
+
 		if isinstance(data, bytes):
-			data_len = len(data)
+			with wssMessageSender(self.session, masked, msg_type) as msg:
+				msg.send_data(data, True)
+			return
 		else:
-			data_len = data.seek(0, 2)
+			chunksize = chunksize if chunksize != None else self.defaults.send_chunksize
+			msg_len = data.seek(0, 2)
+			sent = 0
 			data.seek(0, 0)
+			with wssMessageSender(self.session, masked, msg_type) as msg:
+				while True:
+					chunk = data.read(chunksize)
+					sent += chunk
+					if msg_len == sent:
+						msg.send_data(data, True)
+						break
+					else:
+						msg.send_data(data, False)
 
-		header = wssFrame(
-			self,
-			{
-				'flags': {
-					'fin':    True,
-					'rsv1':   False,
-					'rsv2':   False,
-					'rsv3':   False,
-					'opcode': wssOpcodes.is_binary,
-					# 'masked': masked if masked != None else self.defaults.masked_response,
-					'masked': False,
-				},
-				'payload_size': data_len,
-			}
-		)
-
-		# Send the header of the payload
-		self.connection.sendall(header.construct_header())
-
-		chunksize = chunksize or self.defaults.send_chunksize
-
-		# Send the payload itself
-		if isinstance(data, bytes):
-			self.connection.sendall(data)
-		else:
-			while True:
-				payload = data.read(chunksize)
-				if not payload:
-					break
-				self.connection.sendall(payload)
-
-	def stream_message(self, data, chunksize=None, masked=None):
-		data_len = data.seek(0, 2)
-		data.seek(0, 0)
-		header = wssFrame(
-			self,
-			{
-				'flags': {
-					'fin':    True,
-					'rsv1':   False,
-					'rsv2':   False,
-					'rsv3':   False,
-					'opcode': wssOpcodes.is_binary,
-					# 'masked': masked if masked != None else self.defaults.masked_response,
-					'masked': False,
-				},
-				'payload_size': data_len,
-			}
-		)
-		self.connection.sendall(header.construct_header())
-		chunksize = chunksize or self.defaults.send_chunksize
-		while True:
-			payload = data.read(chunksize)
-			if not payload:
-				break
-			yield self.connection.sendall, payload
-
+	# Stream a message of unknown size
+	def stream_message(self, msg_type:str='binary', masked:bool=None):
+		masked = masked if masked != None else self.defaults.masked_response
+		return wssMessageSender(self.session, masked, msg_type)
 
 
 
@@ -901,62 +869,83 @@ class wssMessageReceiver:
 
 
 
-# Stream chunks
 class wssMessageSender:
 	"""
-	Send a WSS message
+	Stream a message to the client
+	Perfect for large messages of undefined length
 	- session:wss_session
 	"""
-	def __init__(self, session, data):
+	def __init__(self, session, masked:bool=False, msg_type:str='binary'):
 		"""
 		- session:wss_session
-		- data:bytes|buffer
-		- msg_split:bool
+		- msg_type:str='binary'
 		"""
 		self.session = session
 		self.connection = self.session.connection
+		self.masked = masked
+		self.first_frame = True
+		self.closed = False
 
-		if isinstance(data, bytes):
-			self.data_len = len(data)
-		else:
-			self.data_len = data.seek(0, 2)
-
-		self.wframe = wssFrame(
-			self.session,
-			{
-				'flags': {
-					'fin':    True,
-					'rsv1':   True,
-					'rsv2':   True,
-					'rsv3':   True,
-					'opcode': wssOpcodes.is_binary,
-					'masked': True,
-				},
-				'payload_size': self.data_len,
-			}
-		)
+		self.msg_type = wssOpcodes.is_binary
+		if msg_type.lower() == 'binary':
+			self.msg_type = wssOpcodes.is_binary
+		if msg_type.lower() == 'text':
+			self.msg_type = wssOpcodes.is_text
 
 	def __enter__(self):
 		return self
 
 	def __exit__(self, type, value, traceback):
-		if not self.non_chunked:
-			self.cl_con.sendall(b'0\r\n\r\n')
-		# No auto termination, because it's speculated,
-		# that it's possible to send some sort of trailing headers or whatever
-		if self.auto_term:
-			self.request.terminate()
+		# Honestly, piss off
+		# who tf cares?
+		if not self.closed:
+			frame = wssFrame(
+				self,
+				{
+					'flags': {
+						'fin':    True,
+						'rsv1':   False,
+						'rsv2':   False,
+						'rsv3':   False,
+						'opcode': wssOpcodes.continuation,
+						'masked': self.masked,
+					},
+					'payload_size': 0,
+				}
+			)
+			self.connection.sendall(frame.construct_header())
 
-	def send(self, data):
-		# send the chunk size
-		if not self.non_chunked:
-			self.cl_con.sendall(f"""{hex(len(data)).lstrip('0x')}\r\n""".encode())
-		# send the chunk itself
-		self.cl_con.sendall(data)
-		# send separator
-		if not self.non_chunked: 
-			self.cl_con.sendall(b'\r\n')
+	def send_data(self, data:bytes, last:bool=False):
+		"""
+		Send a frame.
+		- data:bytes
+		"""
+		if last:
+			self.closed = True
 
+		frame = wssFrame(
+			self,
+			{
+				'flags': {
+					'fin':    last,
+					'rsv1':   False,
+					'rsv2':   False,
+					'rsv3':   False,
+					'opcode': self.msg_type if self.first_frame else wssOpcodes.continuation,
+					'masked': self.masked,
+				},
+				'payload_size': len(data),
+			}
+		)
+		self.first_frame = False
+		if masked:
+			data = frame.mask.apply(data)
+
+		# Send the header of the payload
+		self.connection.sendall(frame.construct_header())
+
+		# Send the payload itself
+		self.connection.sendall(data)
 
 
 

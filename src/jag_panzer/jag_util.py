@@ -1,7 +1,7 @@
 import os
 
 def conlog(*args, loglvl=1, exact=False):
-	env_lvl = int(os.environ['_jag-dev-lvl'])
+	env_lvl = int(os.environ.get('_jag-dev-lvl', 0))
 	if exact and loglvl == env_lvl:
 		print(*args)
 		return
