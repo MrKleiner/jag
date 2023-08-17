@@ -485,7 +485,7 @@ class wss_session:
 	# Interface
 	# =================
 
-	# terminate session, close connection and terminate the room
+	# terminate WSS session
 	def terminate(self, reason=b'piss'):
 		# raise NotImplementedError()
 		# print('terminating, because', reason)

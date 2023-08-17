@@ -122,9 +122,9 @@ class server_info:
 		self.reject_precache = (self.sysroot / 'assets' / 'reject.html').read_bytes()
 
 
-		#
+		# ------------------
 		# Base config
-		#
+		# ------------------
 		self.cfg = {
 			# Port to run the server on
 			'port': 0,
@@ -161,9 +161,9 @@ class server_info:
 		self.context = self.cfg['context']
 
 
-		#
+		# ------------------
 		# Directory Listing
-		# 
+		# ------------------
 		self.reg_cfg_group(
 			'dir_listing',
 			{
@@ -173,9 +173,9 @@ class server_info:
 		)
 
 
-		# 
+		# ------------------
 		# Advanced CDN serving
-		# 
+		# ------------------
 		self.reg_cfg_group(
 			'static_cdn',
 			{
@@ -204,9 +204,9 @@ class server_info:
 			self.precache_cdn()
 
 
-		# 
+		# ------------------
 		# Buffer sizes
-		# 
+		# ------------------
 		self.reg_cfg_group(
 			'buffers',
 			{
@@ -225,9 +225,33 @@ class server_info:
 		)
 
 
-		# 
+		# ------------------
+		# multiprocessing
+		# ------------------
+
+		# Multiprocessing takes away the privilege of shared context
+		# among requests,
+		# but multiprocessing is the only way to
+		# serve many requests without hanging the server.
+
+		# Single threaded server is perfect for small internal use
+		# applications, like hosting some sort of a control panel.
+		self.reg_cfg_group(
+			'multiprocessing',
+			{
+				# enable the feature
+				'enabled': True,
+
+				# the amount of workerks listening for requests
+				# default to the amount of CPU cores, capped to a range 2-16
+				'worker_count': jag_util.clamp(os.cpu_count() or 2, 2, 16),
+			}
+		)
+
+
+		# ------------------
 		# Logging
-		# 
+		# ------------------
 
 		# default log dirs
 		logdir_selector = {
@@ -268,23 +292,25 @@ class server_info:
 
 
 
+def server_worker(skt, sv_resources, worker_idx):
+	print(f"""Worker {worker_idx+1}/{sv_resources.cfg['multiprocessing']['worker_count']} initialized""")
+	while True:
+		conn, address = skt.accept()
+		print('Worker', worker_idx, 'accepted connection')
+		sv_resources.devtime = time.time()
+		threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
+
+
+
 _server_proc = '[Server Process]'
 def sock_server(sv_resources):
+	print('SKT Server PID:', os.getpid())
 	print(_server_proc, 'Binding server to a port... (5/7)')
 	# Port to run the server on
 	# port = 56817
 	port = sv_resources.cfg['port']
 	# Create the Server object
 	skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-	# Bind server to the specified port. 0 = Find the closest free port and run stuff on it
-	# todo: is this really the only way to bind stuff to the current IP ?
-	"""
-	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _skt_get_ip:
-		_skt_get_ip.connect(('8.8.8.8', 0))
-		# _skt_get_ip.connect(('10.255.255.255', 1))
-		current_ip = _skt_get_ip.getsockname()[0]
-	"""
 
 	skt.bind(
 		(jag_util.get_current_ip(), port)
@@ -299,11 +325,16 @@ def sock_server(sv_resources):
 
 	print(_server_proc, 'Server listening on port (6/7)', skt.getsockname()[1])
 
-	print(_server_proc, 'Accepting connections... (7/7)')
-	while True:
-		conn, address = skt.accept()
-		sv_resources.devtime = time.time()
-		threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
+	if sv_resources.cfg['multiprocessing']['enabled']:
+		for proc in range(sv_resources.cfg['multiprocessing']['worker_count']):
+			multiprocessing.Process(target=server_worker, args=(skt, sv_resources, proc)).start()
+		print(_server_proc, 'Accepting connections... (7/7)')
+	else:
+		print(_server_proc, 'Accepting connections... (7/7)')
+		while True:
+			conn, address = skt.accept()
+			sv_resources.devtime = time.time()
+			threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
 
 
 
@@ -315,6 +346,7 @@ def logger_process(sv_resources, sock_obj):
 
 _main_init = '[root]'
 def server_process(launch_params, stfu=False):
+	print('Main Process PID:', os.getpid())
 	os.environ['_jag-dev-lvl'] = '0'
 
 	# try overriding dev level
@@ -337,7 +369,7 @@ def server_process(launch_params, stfu=False):
 		logging_socket.bind(('127.0.0.1', 0))
 		sv_resources.cfg['logging']['port'] = logging_socket.getsockname()[1]
 		os.environ['jag_logging_port'] = str(sv_resources.cfg['logging']['port'])
-		
+
 		# create and launch the logger process
 		logger_ctrl = multiprocessing.Process(target=logger_process, args=(sv_resources, logging_socket))
 		logger_ctrl.start()
@@ -354,5 +386,54 @@ def server_process(launch_params, stfu=False):
 
 
 
+class JagServer:
+	"""
+	The root of the HTTP server.
+	"""
+	def __init__(self, launch_params):
+		self.launch_params = launch_params
+		self.running = False
 
+	def launch(self):
+		import time
 
+		self.server_process = multiprocessing.Process(target=server_process, args=(self.launch_params,))
+		self.server_process.start()
+		self.running = True
+
+	def shutdown(self):
+		"""Strike the server with a HIMARS."""
+		self.server_process.terminate()
+		self.running = False
+
+		# psutil is much appreciated
+		# And actually required to do this properly...
+		# important todo: psutil dependency
+		try:
+			self._terminate_children_tree()
+		except Exception as e:
+			pass
+
+	def _terminate_children_tree(self):
+		import psutil
+		current_process = psutil.Process()
+		children = current_process.children(recursive=True)
+		for child_proc in children:
+			child_proc.terminate()
+
+	@property
+	def pid(self):
+		return self.server_process.pid
+
+	@property
+	def is_alive(self):
+		return self.server_process.is_alive()
+
+	def restart(self):
+		"""
+		Restart the server.
+		1 - Kill if possible
+		2 - Start
+		"""
+		self.shutdown()
+		self.launch()

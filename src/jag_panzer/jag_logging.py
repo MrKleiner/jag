@@ -53,16 +53,25 @@ class logRecord:
 		Push record to the logging server
 		"""
 		self.push = None
-		import socket, pickle, os
+		import socket, pickle, os, time
 
-		# connect to the logger and send logging data
-		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as skt:
-			skt.connect(
-				( '127.0.0.1', int(os.environ['jag_logging_port']) )
-			)
-			pdata = pickle.dumps(self)
-			skt.sendall(len(pdata).to_bytes(4, 'little'))
-			skt.sendall(pdata)
+		for attempt in range(3):
+			try:
+				# connect to the logger and send logging data
+				with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as skt:
+					logging_port = os.environ.get('jag_logging_port')
+					if logging_port == None:
+						return
+					skt.connect(
+						( '127.0.0.1', int(logging_port) )
+					)
+					pdata = pickle.dumps(self)
+					skt.sendall(len(pdata).to_bytes(4, 'little'))
+					skt.sendall(pdata)
+				return
+			except Exception as e:
+				time.sleep(1)
+				continue
 
 
 
@@ -290,6 +299,7 @@ def processor(log_ctrl):
 		# if the queue is empty - wait 1 second and try again
 		if len(log_ctrl.queue) <= 0:
 			time.sleep(1)
+			continue
 
 		# spawning a process for every record is absolutely terrible
 		# collect a number of records and process them in groups
@@ -315,6 +325,9 @@ def processor(log_ctrl):
 def gestapo(sv_resources, sock_obj):
 	# start listening the socket
 	sock_obj.listen(0)
+	import os
+
+	_print('Logging PID:', os.getpid())
 
 	# initialize the log controller
 	# this class contains the queue and a method for accepting new queue items
