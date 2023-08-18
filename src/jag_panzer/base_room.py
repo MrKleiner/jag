@@ -682,7 +682,7 @@ class headerFields:
 
 
 
-
+# important todo: easy OPTIONS negotiation controls
 class cl_request:
 	def __init__(self, cl_con, cl_addr, srv_res, timing_api):
 		self.cl_con = cl_con
@@ -907,15 +907,27 @@ class cl_request:
 		(Generator)
 		Progressively read body of the incoming request
 		"""
-		content_length = int(self.headers['content-length'])
+		# important todo: It's speculated that a request can be without content-length
+		# important todo: chunked encoding support
+		content_length = self.headers.get('content-length')
+		if not content_length:
+			self.request.reject(411)
+			yield b''
+			return
+
+		content_length = int(content_length)
 		read_progress = 0
-		# yield self.body_buf.getvalue()
+		conlog('Content Length:', content_length)
+
+		# chunksize = self.srv_res.cfg['buffers']['']
 		while True:
 			if read_progress >= content_length:
 				break
-			# todo: finetune this value
-			# or expose it in the config
-			received_data = self.cl_con.recv(4)
+			conlog('Trying to receive data from request...')
+			received_data = self.cl_con.recv(4096)
+			conlog('Reading data from request:', received_data)
+			if not received_data:
+				break
 			yield received_data
 			read_progress += len(received_data)
 
@@ -1080,15 +1092,19 @@ def base_room(cl_con, cl_addr, srv_res, route_index=None):
 		# or the default room
 		if not evaluated_request.terminated:
 			if srv_res.cfg['room_file']:
-				target_func = route_index.match_route('/' + str(evaluated_request.relpath))
-				if target_func:
-					target_func(
-						evaluated_request,
-						evaluated_request.response,
-						evaluated_request.response.offered_services
-					)
+				target_func = route_index.match_route('/' + str(evaluated_request.relpath), evaluated_request.method)
+				if target_func == 'invalid_method':
+					conlog('Room: invalid method:', evaluated_request.method)
+					evaluated_request.reject(405)
 				else:
-					evaluated_request.reject(403)
+					if target_func:
+						target_func(
+							evaluated_request,
+							evaluated_request.response,
+							evaluated_request.response.offered_services
+						)
+					else:
+						evaluated_request.reject(403)
 
 
 		# ----------------
@@ -1119,6 +1135,8 @@ def base_room(cl_con, cl_addr, srv_res, route_index=None):
 	except ConnectionResetError as err:
 		conlog('Connection was reset by the client')
 	except Exception as err:
+		import traceback, sys
+
 		conlog(
 			''.join(
 				traceback.format_exception(

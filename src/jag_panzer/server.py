@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).parent))
 
 from base_room import base_room
 import jag_util
-from jag_util import JagConfigBase, NestedProcessControl
+from jag_util import JagConfigBase, NestedProcessControl, conlog
 
 from easy_timings.mstime import perftest
 
@@ -333,7 +333,7 @@ def logger_process(sv_resources, sock_obj):
 _main_init = '[root]'
 def server_process(sv_resources, stfu=False):
 	print('Main Process PID:', os.getpid())
-	os.environ['_jag-dev-lvl'] = '0'
+	os.environ['_jag-dev-lvl'] = '1'
 
 	# try overriding dev level
 	try:
@@ -397,29 +397,57 @@ class JagRoutingIndex:
 		spec.loader.exec_module(module)
 
 		self.custom_module = module
-
-		self.routes = {}
-
+		self.routes = []
 		self.default_route = None
 
 	def find_routes(self):
 		for attr in dir(self.custom_module):
 			route_obj = getattr(self.custom_module, attr)
 			if isinstance(route_obj, JagRoute):
-				# print('Found route instance', route_obj)
-				self.routes[route_obj.path] = route_obj.func
+				# if path is not declared - that's a fallback route
+				if not route_obj.path:
+					self.default_route = route_obj.func
+				else:
+					# otherwise - get route info and write it down
+					self.routes.append(
+						(
+							route_obj.path,
+							# convert methods to lowercase
+							# sets are faster to search btw
+							set([str(m).lower() for m in (route_obj.methods or [])]) or None,
+							route_obj.func,
+						)
+					)
 
-		self.default_route = self.routes.get(None)
-		if self.default_route:
-			del self.default_route[None]
+	def match_route(self, requested_route, requested_method):
+		requested_method = str(requested_method).lower()
+		# Traverse through every declared route
+		for allowed_path, allowed_methods, fnc in self.routes:
+			# Check if requested path matches any of the declared paths
+			print('Validating route', 'Need:', requested_route, 'Allow:', allowed_path)
+			if requested_route.startswith(allowed_path):
+				# Check if requested method matches the declared method of the route
+				# If route doesn't has a declared method - any method is allowed
 
-	def match_route(self, route):
-		for path, fnc in self.routes.items():
-			# print('Matching declared', path, 'to incoming', route)
-			if route.startswith(path):
-				# print('Found match', path, route)
-				return fnc
+				# Logic: If there are declared methods and requested method doesn't
+				# match any of them - deny.
+				conlog('validating methods:', 'Need:', requested_method, 'Allow:', allowed_methods)
+				if allowed_methods and not requested_method in allowed_methods:
+					conlog('Method validation failed:', 'Need:', requested_method, 'Allow:', allowed_methods)
+					return 'invalid_method'
 
+				# Logic: If there are no declared methods - allow any method
+				if not allowed_methods:
+					return fnc
+
+				# Logic: If allowed method matches requested method - proceed with execution
+				if requested_method in allowed_methods:
+					return fnc
+
+		# If no route was found - execute default function
+		# Aka the function which was declared strictly like
+		# @JagRoute()
+		conlog('Couldnt find a suitable route.', 'Requested route:', requested_route)
 		return self.default_route
 
 	
