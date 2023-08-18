@@ -8,8 +8,11 @@ sys.path.append(str(Path(__file__).parent))
 
 from base_room import base_room
 import jag_util
+from jag_util import JagConfigBase, NestedProcessControl
 
 from easy_timings.mstime import perftest
+
+
 
 
 
@@ -69,7 +72,6 @@ class pylib_preload:
 
 
 
-
 # sysroot         = Path-like pointing to the root of the jag package
 # pylib           = A bunch of precached python packages
 # mimes           = A dictionary of mime types; {file_ext:mime}
@@ -80,7 +82,7 @@ class pylib_preload:
 # cfg             = Server Config
 # doc_root        = Server Document Root
 # list_dir        = List directory as html document
-class server_info:
+class JagHTTPServerResources(JagConfigBase):
 	"""
 	Server info.
 	This class contains the config itself,
@@ -95,19 +97,13 @@ class server_info:
 		from pathlib import Path
 		import jag_util, io, platform
 
+		# todo: obsolete. Delete this
 		self.devtime = 0
-
+		# timestamp of the 
 		self.tstamp = None
-
-		self.input_config = init_config or {}
-
-		config = init_config or {}
 
 		# root of the python package
 		self.sysroot = Path(__file__).parent
-
-		# extend python paths with included libs
-		sys.path.append(str(self.sysroot / 'libs'))
 
 		# mimes
 		self.mimes = {
@@ -123,42 +119,39 @@ class server_info:
 
 
 		# ------------------
-		# Base config
+		# base config
 		# ------------------
-		self.cfg = {
-			# Port to run the server on
-			'port': 0,
+		self.create_base(
+			{
+				# Port to run the server on
+				'port': 0,
 
-			# Document root (where index.html is)
-			'doc_root': None,
+				# Document root (where index.html is)
+				'doc_root': None,
 
-			# This path should point to a python file with "main()" function inside
-			# If nothing is specified, then default room is created
-			'room_file': None,
+				# This path should point to a python file with "main()" function inside
+				# If nothing is specified, then default room is created
+				'room_file': None,
 
-			# Could possibly be treated as bootleg anti-ddos/spam
-			'max_connections': 0,
+				# Could possibly be treated as bootleg anti-ddos/spam
+				'max_connections': 0,
 
-			# The amount of workers in the pool
-			'pool_size': os.cpu_count()*2,
+				# https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Server-Timing
+				'enable_web_timing_api': False,
 
-			# https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Server-Timing
-			'enable_web_timing_api': False,
+				# custom context, must be picklable if multiprocessing is used 
+				'context': None,
 
-			# custom context, must be picklable if multiprocessing is used 
-			'context': None,
-
-			# whether to launch the server in a separate process or not
-			'multiprocessing': True,
-
-			# The name of the html file to serve when request path is '/'
-			'root_index': None,
-			'enable_indexes': True,
-			'index_names': ['index.html'],
-		} | config
-
+				# The name of the html file to serve when request path is '/'
+				'root_index': None,
+				'enable_indexes': True,
+				'index_names': ['index.html'],
+			},
+			init_config
+		)
 		self.doc_root = Path(self.cfg['doc_root'])
 		self.context = self.cfg['context']
+
 
 
 		# ------------------
@@ -174,34 +167,15 @@ class server_info:
 
 
 		# ------------------
-		# Advanced CDN serving
+		# Errors
 		# ------------------
 		self.reg_cfg_group(
-			'static_cdn',
+			'errors',
 			{
-				# Path to the static CDN
-				# can point anywhere
-				'path': None,
-				# Relieve the filesystem stress by precaching items inside this folder
-				# only useful if folder contains a big amount of small files
-				'precache': True,
-				# An array of paths relative to the root cdn path
-				# to exclude from caching
-				'cache_exclude': [],
-				# Glob pattern for caching files, default to '*'
-				'pattern': None,
-				# Wether to trigger the callback function
-				# when incoming request is trying to access the static CDN
-				'skip_callback': True,
+				# echo exceptions to client
+				'echo_to_client': False,
 			}
 		)
-
-		self.cdn_path = None
-		self.cdn_cache = {}
-
-		if self.cfg['static_cdn']['path']:
-			self.cdn_path = Path(self.cfg['static_cdn']['path'])
-			self.precache_cdn()
 
 
 		# ------------------
@@ -272,11 +246,12 @@ class server_info:
 				'logs_dir': None,
 
 				# The RPC port of the logger
+				# DO NOT TOUCH !
 				'port': None,
 			}
 		)
 
-		# ensure the de3fault folder exists
+		# ensure the default folder exists
 		if self.cfg['logging']['logs_dir'] == None:
 			self.cfg['logging']['logs_dir'] = logdir_selector[platform.system().lower()]
 			self.cfg['logging']['logs_dir'].mkdir(parents=True, exist_ok=True)
@@ -287,18 +262,26 @@ class server_info:
 		self.pylib = pylib_preload()
 
 
-	def reg_cfg_group(self, groupname, paramdict):
-		self.cfg[groupname] = paramdict | self.input_config.get(groupname, {})
+
+
 
 
 
 def server_worker(skt, sv_resources, worker_idx):
+	sv_resources.reload_libs()
+
+	custom_room_func = None
+	if sv_resources.cfg['room_file']:
+		route_index = JagRoutingIndex(sv_resources.cfg['room_file'])
+		route_index.find_routes()
+
 	print(f"""Worker {worker_idx+1}/{sv_resources.cfg['multiprocessing']['worker_count']} initialized""")
 	while True:
 		conn, address = skt.accept()
-		print('Worker', worker_idx, 'accepted connection')
+		# print('Worker', worker_idx, 'accepted connection')
 		sv_resources.devtime = time.time()
-		threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
+		threading.Thread(target=base_room, args=(conn, address, sv_resources, route_index), daemon=True).start()
+
 
 
 
@@ -313,11 +296,11 @@ def sock_server(sv_resources):
 	skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 	skt.bind(
-		(jag_util.get_current_ip(), port)
+		('', port)
 	)
 
 	# Basically launch the server
-	# The number passed to this function identifies the max amount of simultaneous connections
+	# The number passed to this function identifies the max amount of simultaneous connections.
 	# If the amount of connections exceeds this limit -
 	# connections become rejected till other ones are resolved (aka closed)
 	# 0 = infinite
@@ -330,6 +313,7 @@ def sock_server(sv_resources):
 			multiprocessing.Process(target=server_worker, args=(skt, sv_resources, proc)).start()
 		print(_server_proc, 'Accepting connections... (7/7)')
 	else:
+		sv_resources.reload_libs()
 		print(_server_proc, 'Accepting connections... (7/7)')
 		while True:
 			conn, address = skt.accept()
@@ -344,20 +328,21 @@ def logger_process(sv_resources, sock_obj):
 
 
 
+# Main process of the entire system
+# It launches the server itself and everything else
 _main_init = '[root]'
-def server_process(launch_params, stfu=False):
+def server_process(sv_resources, stfu=False):
 	print('Main Process PID:', os.getpid())
 	os.environ['_jag-dev-lvl'] = '0'
 
 	# try overriding dev level
 	try:
-		os.environ['_jag-dev-lvl'] = str(int(launch_params['console_echo_level']))
+		os.environ['_jag-dev-lvl'] = str(int(sv_resources.cfg['console_echo_level']))
 	except Exception as e:
 		pass
 
 	# Preload resources n stuff
 	print(_main_init, 'Initializing resources... (1/7)')
-	sv_resources = server_info(launch_params)
 
 	# logging
 	os.environ['jag_logging_port'] = 'False'
@@ -386,54 +371,75 @@ def server_process(launch_params, stfu=False):
 
 
 
-class JagServer:
+
+class JagRoute:
+	def __init__(self, path=None, methods=None):
+		self.path = path
+		self.methods = methods
+
+	def __call__(self, func):
+		self.func = func
+		return self
+		
+
+
+
+class JagRoutingIndex:
+	def __init__(self, room_file):
+		import importlib, sys
+
+		module_file_path = room_file
+		module_name = 'jag_custom_action'
+
+		spec = importlib.util.spec_from_file_location(module_name, str(module_file_path))
+		module = importlib.util.module_from_spec(spec)
+		sys.modules[module_name] = module
+		spec.loader.exec_module(module)
+
+		self.custom_module = module
+
+		self.routes = {}
+
+		self.default_route = None
+
+	def find_routes(self):
+		for attr in dir(self.custom_module):
+			route_obj = getattr(self.custom_module, attr)
+			if isinstance(route_obj, JagRoute):
+				# print('Found route instance', route_obj)
+				self.routes[route_obj.path] = route_obj.func
+
+		self.default_route = self.routes.get(None)
+		if self.default_route:
+			del self.default_route[None]
+
+	def match_route(self, route):
+		for path, fnc in self.routes.items():
+			# print('Matching declared', path, 'to incoming', route)
+			if route.startswith(path):
+				# print('Found match', path, route)
+				return fnc
+
+		return self.default_route
+
+	
+
+
+class JagServer(NestedProcessControl):
 	"""
 	The root of the HTTP server.
 	"""
 	def __init__(self, launch_params):
-		self.launch_params = launch_params
-		self.running = False
+		self.launch_params = JagHTTPServerResources(launch_params)
+		self.routes = None
+		self.threaded = not self.launch_params.cfg['multiprocessing']['enabled']
 
 	def launch(self):
-		import time
-
-		self.server_process = multiprocessing.Process(target=server_process, args=(self.launch_params,))
-		self.server_process.start()
-		self.running = True
-
-	def shutdown(self):
-		"""Strike the server with a HIMARS."""
-		self.server_process.terminate()
-		self.running = False
-
-		# psutil is much appreciated
-		# And actually required to do this properly...
-		# important todo: psutil dependency
-		try:
-			self._terminate_children_tree()
-		except Exception as e:
-			pass
-
-	def _terminate_children_tree(self):
-		import psutil
-		current_process = psutil.Process()
-		children = current_process.children(recursive=True)
-		for child_proc in children:
-			child_proc.terminate()
-
-	@property
-	def pid(self):
-		return self.server_process.pid
-
-	@property
-	def is_alive(self):
-		return self.server_process.is_alive()
-
-	def restart(self):
-		"""
-		Restart the server.
-		1 - Kill if possible
-		2 - Start
-		"""
-		self.shutdown()
-		self.launch()
+		if not self.threaded:
+			self.server_process = multiprocessing.Process(target=server_process, args=(self.launch_params,))
+			self.server_process.start()
+			self.running = True
+		else:
+			self.server_process = threading.Thread(target=server_process, args=(self.launch_params,))
+			self.server_process.start()
+			self.running = True

@@ -130,3 +130,64 @@ def traceback_to_text(info):
 			return ''.join(traceback.format_exception(*info))
 	except Exception as e:
 		return str(e) + ' ' + str(info)
+
+
+# Todo: should this really be in util ?
+class JagConfigBase:
+	"""Class for creating configs with groups"""
+	def reg_cfg_group(self, groupname, paramdict):
+		self.cfg[groupname] = paramdict | self.cfg.get(groupname, {})
+
+	def create_base(self, default_cfg=None, input_cfg=None):
+		default_cfg = default_cfg or {}
+		input_cfg = input_cfg or {}
+
+		self.cfg = default_cfg | input_cfg
+
+
+class NestedProcessControl:
+	"""
+	Simple interface for launching and killing a process,
+	which may or may not have children.
+
+	The process in question must be stored in self.target_process
+	"""
+	running = False
+	threaded = False
+
+	def terminate(self):
+		"""Strike the process with a HIMARS."""
+		self.target_process.terminate()
+		self.running = False
+
+		# psutil is much appreciated
+		# And actually required to do this properly...
+		# important todo: psutil dependency
+		try:
+			self._terminate_children_tree()
+		except Exception as e:
+			pass
+
+	def _terminate_children_tree(self):
+		import psutil
+		current_process = psutil.Process()
+		children = current_process.children(recursive=True)
+		for child_proc in children:
+			child_proc.terminate()
+
+	@property
+	def pid(self):
+		return self.target_process.pid
+
+	@property
+	def is_alive(self):
+		return self.target_process.is_alive()
+
+	def restart(self):
+		"""
+		Restart the server.
+		1 - Kill if possible
+		2 - Start
+		"""
+		self.terminate()
+		self.launch()

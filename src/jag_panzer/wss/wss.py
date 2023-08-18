@@ -174,9 +174,9 @@ A message can consist of multiple frames.
 
 from pathlib import Path
 import sys
-print('WSS sys path BEFORE tweaks:', sys.path)
+# print('WSS sys path BEFORE tweaks:', *sys.path, sep='\n')
 sys.path.append(str(Path(__file__).parent.parent))
-print('WSS sys path AFTER tweaks:', sys.path)
+# print('WSS sys path AFTER tweaks:', *sys.path, sep='\n')
 
 from jag_util import clamp as clamp_num
 
@@ -275,11 +275,11 @@ class masking_algo:
 
 	# the slowest method possible
 	def default_slow(self, data, mask):
-		buf = self.session.io.BytesIO()
-		for idx, bt in enumerate(data):
-			buf.write((bt ^ mask[idx%4]).to_bytes(1, self.byteorder))
+		bt_array = bytearray(data)
+		for idx in range(len(bt_array)):
+			bt_array[idx] ^= mask[idx%4]
 
-		return buf.getvalue()
+		return bytes(bt_array)
 
 	# Numpy is 3 times faster than default method
 	def numpy_fast(self, data, mask):
@@ -528,7 +528,7 @@ class wss_session:
 		masked = masked if masked != None else self.defaults.masked_response
 
 		if isinstance(data, bytes):
-			with wssMessageSender(self.session, masked, msg_type) as msg:
+			with wssMessageSender(self, masked, msg_type) as msg:
 				msg.send_data(data, True)
 			return
 		else:
@@ -536,7 +536,7 @@ class wss_session:
 			msg_len = data.seek(0, 2)
 			sent = 0
 			data.seek(0, 0)
-			with wssMessageSender(self.session, masked, msg_type) as msg:
+			with wssMessageSender(self, masked, msg_type) as msg:
 				while True:
 					chunk = data.read(chunksize)
 					sent += chunk
@@ -549,7 +549,7 @@ class wss_session:
 	# Stream a message of unknown size
 	def stream_message(self, msg_type:str='binary', masked:bool=None):
 		masked = masked if masked != None else self.defaults.masked_response
-		return wssMessageSender(self.session, masked, msg_type)
+		return wssMessageSender(self, masked, msg_type)
 
 
 
@@ -808,7 +808,7 @@ class wssMessageReceiver:
 
 	def receive_frame(self):
 		# First, initialize new frame
-		wframe = wssFrame(self)
+		wframe = wssFrame(self.session)
 
 		# First - await 2 header essential header bytes
 		hbyte1, hbyte2 = self.session.aligned_receive(2)
@@ -900,7 +900,7 @@ class wssMessageSender:
 		# who tf cares?
 		if not self.closed:
 			frame = wssFrame(
-				self,
+				self.session,
 				{
 					'flags': {
 						'fin':    True,
@@ -924,7 +924,7 @@ class wssMessageSender:
 			self.closed = True
 
 		frame = wssFrame(
-			self,
+			self.session,
 			{
 				'flags': {
 					'fin':    last,
@@ -938,7 +938,7 @@ class wssMessageSender:
 			}
 		)
 		self.first_frame = False
-		if masked:
+		if self.masked:
 			data = frame.mask.apply(data)
 
 		# Send the header of the payload

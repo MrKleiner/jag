@@ -15,16 +15,13 @@ _rebind = print
 def echo_exception_to_client(err, con):
 	import traceback
 
-	try:
-		trback = ''.join(
-			traceback.format_exception(
-				type(err),
-				err,
-				err.__traceback__
-			)
+	trback = ''.join(
+		traceback.format_exception(
+			type(err),
+			err,
+			err.__traceback__
 		)
-	except Exception as e:
-		trback = f'Jag critical error: {err}'
+	)
 
 	con.sendall('HTTP/1.1 500 Internal Server Error\r\n'.encode())
 	response_content = f"""<!DOCTYPE HTML>
@@ -655,13 +652,15 @@ class headerFields:
 	def collect(self):
 		maxsize = self.maxsize
 
-		rfile = self.cl_con.makefile('rb', newline=b'\r\n')
+		# Mega important shit: not setting buffering to 0 would result into
+		# extra data being buffered even AFTER the fields end\
+		rfile = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
 		conlog('created virtual file')
 		while True:
 			if maxsize <= 0:
 				# self.reject(431)
 				# is this ok ?
-				return False
+				# return False
 				break
 			line = rfile.readline(maxsize)
 			conlog('read line', line)
@@ -676,6 +675,8 @@ class headerFields:
 
 			# append field to the buffer
 			self.lines.append(line.decode().strip())
+
+		rfile.close()
 
 
 
@@ -900,28 +901,6 @@ class cl_request:
 		self.response.send_preflight()
 		self.terminate()
 
-	# I cannot be bothered. Here, have *args and fuckoff
-	def match_path(self, action_dict, *args, trim_path=True):
-		"""
-		Sample set/list:
-		{
-			('/pootis/sandwich/dispenser', func_name1),
-			('/pootis',                    func_name2),
-		}
-		"""
-		comparator = '/' + self.relpath.as_posix()
-
-		for rpath, func in action_dict:
-			if comparator.startswith(rpath):
-				if trim_path:
-					self.trimpath = self.srv_res.pylib.Path(comparator.lstrip(rpath))
-				return func(self, self.response, self.response.offered_services, *args)
-
-		# if no match was found - return false
-		# todo: return some sort of a variable/class,
-		# so that it's more specific
-		return False
-
 
 	def read_body_stream(self):
 		"""
@@ -929,14 +908,14 @@ class cl_request:
 		Progressively read body of the incoming request
 		"""
 		content_length = int(self.headers['content-length'])
-		read_progress = self.body_buf.seek(0, 2)
-		yield self.body_buf.getvalue()
+		read_progress = 0
+		# yield self.body_buf.getvalue()
 		while True:
 			if read_progress >= content_length:
 				break
 			# todo: finetune this value
 			# or expose it in the config
-			received_data = self.cl_con.recv(65535)
+			received_data = self.cl_con.recv(4)
 			yield received_data
 			read_progress += len(received_data)
 
@@ -946,7 +925,6 @@ class cl_request:
 		buf = io.BytesIO()
 		for chunk in self.read_body_stream():
 			buf.write(chunk)
-
 		if as_buf:
 			buf.seek(0, 0)
 			return buf
@@ -1060,9 +1038,8 @@ class cl_request:
 # Some of its default services
 
 # Yes, this is a function, not a class. Cry
-def base_room(cl_con, cl_addr, srv_res):
+def base_room(cl_con, cl_addr, srv_res, route_index=None):
 	import time
-	import importlib.util
 	from easy_timings.mstime import perftest
 
 	try:
@@ -1082,11 +1059,6 @@ def base_room(cl_con, cl_addr, srv_res):
 		# todo: Shouldn't the timing class take this as an argument?
 		if srv_res.cfg['enable_web_timing_api']:
 			timing_api.enable_in_response(True)
-
-		# precache some commonly-used python libraries
-		# important todo: is this even needed?
-		with timing_api.record('lib_cache', _internal=True):
-			srv_res.reload_libs()
 
 		request_log = {
 			'time': srv_res.pylib.datetime.datetime.now(),
@@ -1108,22 +1080,16 @@ def base_room(cl_con, cl_addr, srv_res):
 		# or the default room
 		if not evaluated_request.terminated:
 			if srv_res.cfg['room_file']:
-				with timing_api.record('spec', _internal=True):
-					spec = importlib.util.spec_from_file_location('main', str(srv_res.cfg['room_file']))
-					custom_func = importlib.util.module_from_spec(spec)
-					spec.loader.exec_module(custom_func)
+				target_func = route_index.match_route('/' + str(evaluated_request.relpath))
+				if target_func:
+					target_func(
+						evaluated_request,
+						evaluated_request.response,
+						evaluated_request.response.offered_services
+					)
+				else:
+					evaluated_request.reject(403)
 
-				custom_func.main(
-					evaluated_request,
-					evaluated_request.response,
-					evaluated_request.response.offered_services
-				)
-			else:
-				_default_room(
-					evaluated_request,
-					evaluated_request.response,
-					evaluated_request.response.offered_services
-				)
 
 		# ----------------
 		# Write Log
@@ -1153,7 +1119,6 @@ def base_room(cl_con, cl_addr, srv_res):
 	except ConnectionResetError as err:
 		conlog('Connection was reset by the client')
 	except Exception as err:
-		import traceback
 		conlog(
 			''.join(
 				traceback.format_exception(
@@ -1164,20 +1129,21 @@ def base_room(cl_con, cl_addr, srv_res):
 			)
 		)
 
-		echo_exception_to_client(err, cl_con)
+		try:
+			if srv_res.cfg['errors']['echo_to_client']:
+				echo_exception_to_client(err, cl_con)
+			err_rec = logRecord(2, traceback_to_text(err))
+			err_rec.push()
+		except Exception as e:
+			pass
 
-		err_rec = logRecord(2, traceback_to_text(err))
-		err_rec.push()
-
-		raise err
+		sys.exit()
 
 
 	import sys
 	# conlog('        Exiting...', evaluated_request.cl_addr[1])
-
+	# _rebind('Exiting...')
 	# cl_con.shutdown(2)
 	cl_con.close()
 	sys.exit()
-
-
 
