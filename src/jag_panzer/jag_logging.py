@@ -269,6 +269,7 @@ class stasi:
 
 
 # dump a group of log records to a file
+# this function is being run every n seconds as a subprocess
 def dump_log_records(batch, tgt_dir):
 	# first, evaluate pickled data
 	import pickle
@@ -287,12 +288,15 @@ def dump_log_records(batch, tgt_dir):
 
 
 # The processor keeps an eye on the queue and processes items piled up in it
+# This function runs as a thread in a loop from the very beginning of the program
+# and only terminates when the server was shutdown
 def processor(log_ctrl):
 	import jag_util
 
 	while True:
-		if len(log_ctrl.queue) >= 2048:
+		if len(log_ctrl.queue) >= 4096:
 			# Something went very wrong
+			# Todo: really ?
 			log_ctrl.queue = []
 			return
 

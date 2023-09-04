@@ -154,16 +154,16 @@ Data: 0 1 2 3 4 5 6 7 8 9 ...
 """
 A message can consist of multiple frames.
 
-+--------------------------------------------------------+
-|                     MESSAGE                            |
-|                                                        |
-|      FRAME           FRAME           FRAME             |
-|  +------------+  +------------+  +------------+        |
-|  |   HEADER   |  |   HEADER   |  |   HEADER   |        |
-|  +------------+  +------------+  +------------+  ...   |
-|  |    DATA    |  |    DATA    |  |    DATA    |        |
-|  +------------+  +------------+  +------------+        |
-+--------------------------------------------------------+
++-------------------------------------------------------+
+|                     MESSAGE                           |
+|                                                       |
+|      FRAME           FRAME           FRAME            |
+|  +------------+  +------------+  +------------+       |
+|  |   HEADER   |  |   HEADER   |  |   HEADER   |       |
+|  +------------+  +------------+  +------------+  ...  |
+|  |    DATA    |  |    DATA    |  |    DATA    |       |
+|  +------------+  +------------+  +------------+       |
++-------------------------------------------------------+
 """
 
 
@@ -196,6 +196,21 @@ from jag_util import clamp as clamp_num
 # xor lib - 26 sec              (32.7% of max speed)
 # numpy -   37 sec (+14mb RAM)  (22.9% of max speed)
 # default - 145 sec             (5.86% of max speed)
+
+# The way the algorythm is chosen is simple:
+# There's some hard coded sample data:
+# 	- 8 random bytes acting as a payload BEFORE XORing
+# 	- 4 random bytes acting as a mask
+# 	- sha256 hex hash digest of the sample payload AFTER XORing
+# Then, a number of algorythms are tried in the following order:
+#	- Fastest C
+# 	- XOR Lib
+# 	- numpy
+# 	- default python
+# Each attempt wrapped inside try/except block tries XORing with sample data
+# and in the end there's an assert comparing hex digests of the newly generated result.
+# If nothing goes wrong and hashes match - the method is used.
+# Default python method is used as a fallback if all the attempts fail.
 class masking_algo:
 	def __init__(self, session):
 		import sys, platform
@@ -275,6 +290,7 @@ class masking_algo:
 
 	# the slowest method possible
 	def default_slow(self, data, mask):
+		# 40% speedup from original approach
 		bt_array = bytearray(data)
 		for idx in range(len(bt_array)):
 			bt_array[idx] ^= mask[idx%4]
@@ -292,6 +308,8 @@ class masking_algo:
 
 	# There's a library implementing faster XOR. It's 11% faster than numpy
 	# Numpy wastes 14mb of ram which is just too much. Xor Lib is preferred over numpy...
+	# It's overall much lighter than numpy, because numpy holds an entire structure underneath
+	# While XOR Lib is simply a few C functions
 	def xor_lib(self, data, mask):
 		return self.cyclic_xor(data, mask)
 
@@ -438,7 +456,7 @@ class wss_session:
 		# If header fields were not provided on session init - 
 		# it means they have to be retrieved from the client.
 		if not incoming_hshake:
-			from base_room import headerFields
+			from jag_http_session import headerFields
 			header_buffer = headerFields(self.connection, 65535)
 			header_buffer.collect()
 			lines = header_buffer.lines
@@ -619,7 +637,8 @@ class wssFrame:
 	- construct_info:dict
 		This data should represent all the info needed to
 		construct a payload header.
-		This can only be used when creating a frame
+		This can only be used when creating a new frame.
+		NOT evaluating an incoming frame
 			{
 				'flags': {
 					'fin':    bool,

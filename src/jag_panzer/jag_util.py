@@ -19,6 +19,56 @@ def dict_pretty_print(d):
 
 	print(sex)
 
+
+def iterable_to_grouped_text(tgt, groupname='', indent=1):
+	indent = '\t'*indent
+
+	result = '\n'
+	result += f'{indent}+--------------------------\n'
+	result += f'{indent}|{groupname}\n'
+	result += f'{indent}+--------------------------\n'
+	if isinstance(tgt, dict):
+		for k, v in tgt.items():
+			result += f'{indent}| {k}: {v}\n'
+
+	if type(tgt) in (set, list, tuple):
+		for v in tgt:
+			result += f'{indent}| {v}\n'
+
+	result += f'{indent}+--------------------------\n'
+	return result
+
+
+class DynamicGroupedText:
+	def __init__(self, groupname='', indent=1):
+		self.indent = '\t'*indent
+		self.groupname = groupname
+
+	def __enter__(self):
+		conlog(f'\n{self.indent}+--------------------------')
+		conlog(f'{self.indent}|{self.groupname}')
+		conlog(f'{self.indent}+--------------------------')
+		return self
+		
+	def __exit__(self, type, value, traceback):
+		conlog(f'{self.indent}+--------------------------\n')
+
+	def print(self, *args):
+		conlog(f'{self.indent}| {args}')
+
+def progrssive_hash(buf, hash_function, mb_read=100):
+	block_size = (1024**2)*mb_read
+	digest = hash_function()
+	while True:
+		data = buf.read(block_size)
+		if not data:
+			break
+		digest.update(data)
+
+	return digest.hexdigest()
+
+
+
 def multireplace(src, replace_pairs):
 	for replace_what, replace_with in replace_pairs:
 		src = src.replace(replace_what, replace_with)

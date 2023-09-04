@@ -1,11 +1,14 @@
-
 from pathlib import Path
 import sys
-sys.path.append(str(Path(__file__).parent))
 
-from jag_util import dict_pretty_print, print_exception, traceback_to_text, conlog
+if not str(Path(__file__).parent) in sys.path:
+	sys.path.append(str(Path(__file__).parent))
+
+from jag_util import dict_pretty_print, print_exception, traceback_to_text, conlog, iterable_to_grouped_text, DynamicGroupedText
 
 from jag_logging import logRecord
+from jag_exceptions import *
+import jag_http_ents
 
 _room_echo = '[Request Evaluator]'
 
@@ -71,6 +74,7 @@ def _default_room(request, response, services):
 
 	# otherwise - reject
 	request.reject(405)
+
 
 
 # utility class returned by server_timings.record
@@ -375,10 +379,11 @@ class sv_response:
 		self.cl_con = cl_con
 		self.srv_res = srv_res
 		self.timings = self.request.timings
-		self.headers = {
+		self.headers = jag_http_ents.HTTPHeaders({
 			'Server': 'Jag',
 			# 'Server-Timings': '',
-		}
+		})
+
 		self.add_cookies = []
 
 		self.content_type = 'application/octet-stream'
@@ -404,20 +409,8 @@ class sv_response:
 			self.headers['Server-Timing'] = self.timings.as_header()
 
 		# send headers
-		for header_name, header_value in self.headers.items():
-			self.cl_con.sendall(
-				f"""{header_name}: {header_value}\r\n""".encode()
-			)
-
-		# send cookies, if any
-		# important todo: this is very slow
-		if self.add_cookies:
-			cbuf = self.srv_res.pylib.io.BytesIO()
-			for cookie in self.add_cookies:
-				cbuf.write(b'Set-Cookie: ')
-				cbuf.write(cookie)
-				cbuf.write(b'\r\n')
-			self.cl_con.sendall(cbuf.getvalue())
+		for hbytes in self.headers.progrssive_construct():
+			self.cl_con.sendall(hbytes)
 
 		# Send an extra \r\n to indicate the end of headers
 		self.cl_con.sendall('\r\n'.encode())
@@ -426,6 +419,13 @@ class sv_response:
 		# Yes, BUT, it costs A LOT of time and effort for the machine
 		# Such a simple buttplug is WAY more efficient
 		self.send_preflight = lambda: None
+
+
+	def send_headers_only(self):
+		self.code = 204
+		self.send_preflight()
+		self.request.terminate()
+
 
 	# mark response as a download
 	def mark_as_xfiles(self, filename):
@@ -588,55 +588,6 @@ class sv_response:
 					stream.send(data)
 
 
-	def set_cookie(self, cname, cval, domain=None, expires=None, secure=False, path=None, httponly=False, max_age=None, samesite=None):
-		"""
-		Adds one Set-Cookie header per call.
-		"expires" parameter accepts datetime objects.
-		"""
-		datetime = self.srv_res.pylib.datetime
-		# This is retarded...
-		wday_picker = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-		month_picker = [
-			'_',
-			'Jan',
-			'Feb',
-			'Mar',
-			'Apr',
-			'May',
-			'Jun',
-			'Jul',
-			'Aug',
-			'Sep',
-			'Oct',
-			'Nov',
-			'Dec',
-		]
-
-		cookie_buf = self.srv_res.pylib.io.BytesIO()
-		cookie_buf.write(f'{cname}={cval}'.encode())
-
-		if domain:
-			cookie_buf.write(f'; Domain={domain}'.encode())
-		if expires:
-			formatted_expires = expires
-			if isinstance(expires, datetime.datetime):
-				asutc = expires.astimezone(datetime.timezone.utc)
-				formatted_expires = f"""{wday_picker[asutc.weekday()]}, {asutc.day} {month_picker[asutc.month]} {asutc.year} {asutc.strftime('%H:%M:%S')} GMT"""
-			cookie_buf.write(f'; Expires={formatted_expires}'.encode())
-		if secure == True:
-			cookie_buf.write(b'; Secure')
-		if path:
-			cookie_buf.write(f'; Path={path}'.encode())
-		if httponly:
-			cookie_buf.write(b'; HttpOnly')
-		if max_age:
-			cookie_buf.write(f'; Max-Age={max_age}'.encode())
-		if samesite:
-			cookie_buf.write(f'; SameSite={samesite.capitalize()}'.encode())
-
-		self.add_cookies.append(cookie_buf.getvalue())
-
-
 
 # This is a very risky move
 class headerFields:
@@ -646,7 +597,7 @@ class headerFields:
 	"""
 	def __init__(self, cl_con, maxsize=65535):
 		self.cl_con = cl_con
-		self.maxsize = 65535
+		self.maxsize = maxsize
 		self.lines = []
 
 	def collect(self):
@@ -656,33 +607,63 @@ class headerFields:
 		# extra data being buffered even AFTER the fields end\
 		rfile = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
 		conlog('created virtual file')
-		while True:
-			if maxsize <= 0:
-				# self.reject(431)
-				# is this ok ?
-				# return False
-				break
-			line = rfile.readline(maxsize)
-			conlog('read line', line)
+		with DynamicGroupedText('Read Header Fields Stream') as log_group:
+			while True:
+				if maxsize <= 0:
+					# self.reject(431)
+					# is this ok ?
+					# return False
+					break
+				line = rfile.readline(maxsize)
+				log_group.print('read line', line)
 
-			# it's important to also count \r\n\t etc.
-			maxsize -= len(line)
+				# it's important to also count \r\n\t etc.
+				maxsize -= len(line)
 
-			# encountered end of the header fields
-			if line == b'\r\n':
-				conlog('Encountered fields end', line)
-				break
+				# encountered end of the header fields
+				if line == b'\r\n':
+					log_group.print('Encountered fields end', line)
+					break
 
-			# append field to the buffer
-			self.lines.append(line.decode().strip())
+				# append field to the buffer
+				self.lines.append(line.decode().strip())
 
-		rfile.close()
+			rfile.close()
 
+
+
+
+class MultipartPartition:
+	"""
+	Single partition of a multipart message
+	"""
+	def __init__(self, request):
+		super(MultipartPartition, self).__init__()
+		self.arg = arg
+		
+
+
+class MultipartReader:
+	"""
+	Read a request encoded with multipart/form-data
+	"""
+	def __init__(self, request):
+		self.request = request
+		self.cl_con = request.cl_con
+		
+	def __enter__(self):
+		return self
+
+	def __exit__(self, type, value, traceback):
+		pass
+
+	def read_all(self, maxsize=None)
 
 
 
 
 # important todo: easy OPTIONS negotiation controls
+# sex
 class cl_request:
 	def __init__(self, cl_con, cl_addr, srv_res, timing_api):
 		self.cl_con = cl_con
@@ -692,7 +673,10 @@ class cl_request:
 
 		self.terminated = False
 
-		self.headers = {}
+		self.headers = jag_http_ents.HTTPHeaders()
+
+		# Inficates that the message is multipart
+		self.multipart = False;
 
 		# Initialize the response class
 		# Early init of this class is needed
@@ -700,11 +684,6 @@ class cl_request:
 		with self.timings.record('rsp_class_init', _internal=True):
 			self.response = sv_response(self, cl_con, srv_res)
 
-		# Some commonly-used headers are lazy processed
-		# for easier use
-		self._cookie = None
-		self._cache_control = None
-		self._accept = None
 		self._byterange = None
 
 		# Try/Except in case of malformed request
@@ -714,72 +693,12 @@ class cl_request:
 			self.eval_request()
 		except Exception as e:
 			self.reject(400)
-			raise e
+			conlog(traceback_to_text(e))
+			# raise e
 		
 
 	# Init
 	# =================
-
-	# Obsolete
-	def _collect_head_buf(self):
-
-		io = self.srv_res.pylib.io
-
-		self.head_buf = io.BytesIO()
-		self.body_buf = io.BytesIO()
-
-		double_rn = 0
-		expect_r = False
-
-		# important todo: This is extremely (relatively) slow
-		# simple http server from python base library does something like
-		# do 1 byte receive from client till \r\n\r\n
-		# OR
-		# Read 65535 bytes and then process the thing
-		while True:
-			data = self.cl_con.recv(65535)
-			for idx, char in enumerate(data):
-				# conlog('Char:', chr(char).encode())
-
-				if char != 10 and char != 13:
-					# conlog('^ no match, abort')
-					expect_r = False
-					double_rn = 0
-					continue
-
-				if char == 13:
-					# conlog('^ found 13')
-					expect_r = True
-					continue
-
-				if expect_r and char != 10:
-					# conlog('^ is not 10, abort')
-					expect_r = False
-					double_rn = 0
-					continue
-
-				if expect_r and char == 10:
-					# conlog('^ found 10, +1')
-					double_rn += 1
-					expect_r = False
-
-				if double_rn == 2:
-					# conlog('Writing to body buffer:', bytes(data[(idx+1):]))
-					self.body_buf.write(bytes(data[(idx+1):]))
-					self.head_buf.write(bytes(data[:idx]))
-					break
-
-			if double_rn == 2:
-				conlog('Header Buf', self.head_buf.getvalue().decode())
-				break
-
-			self.head_buf.write(data)
-
-			if self.head_buf.tell() >= self.srv_res.cfg['buffers']['max_header_len']:
-				self.response.reject(431)
-				break
-
-	# collect_head_buf
 
 	# Request evaluation has a dedicated function for easier error handling
 	def eval_request(self):
@@ -796,20 +715,13 @@ class cl_request:
 
 
 		with self.timings.record('eval_hbuf', _internal=True):
-			# raw bytes of the header
-			# header_data = self.head_buf.getvalue()
-			# conlog(header_data.decode())
-
-			# split header into lines
-			# header_data = header_data.decode().split('\r\n')
-			# header_fields = self.header_fields
 			header_fields = header_buffer.lines
-			conlog('\n'.join(header_fields))
+			conlog(iterable_to_grouped_text(header_fields, 'Decoded Header Fields'))
 
 			# First line of the header is always [>request method< >path< >http version<]
 			# It's up to the client to send valid data
 			self.method, self.path, self.protocol = header_fields[0].split(' ')
-			conlog(self.method, self.path, self.protocol)
+			conlog(iterable_to_grouped_text((self.method, self.path, self.protocol), 'Top Field'))
 			self.method = self.method.lower()
 
 			# deconstruct the url into components
@@ -818,7 +730,7 @@ class cl_request:
 			# important todo: lazy processing
 			# first - evaluate query params
 			self.query_params = {k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
-			conlog('Url params:', self.query_params)
+			conlog(iterable_to_grouped_text(self.query_params, 'Url params:'))
 
 			# then, evaluate path
 			decoded_url_path = urllib.parse.unquote(parsed_url.path)
@@ -829,23 +741,19 @@ class cl_request:
 			# Delete the first line as it's no longer needed
 			del header_fields[0]
 
-			# parse the remaining headers into a dict
-			request_dict = {}
-			for line in header_fields:
-				# skip empty stuff
-				if line.strip() == '':
-					continue
-				line_split = line.split(': ')
-				request_dict[line_split[0].lower()] = ': '.join(line_split[1:])
+			# get remaining headers
+			self.headers = jag_http_ents.HTTPHeaders(header_fields)
 
-			dict_pretty_print(request_dict)
+			# init cookies
+			self.cookies = jag_http_ents.Cookies(self.headers, self.response.headers)
 
-			self.headers = request_dict
+			conlog(iterable_to_grouped_text(self.headers.fields, 'Request headers:'))
+			conlog(iterable_to_grouped_text(self.cookies.request_cookies.kv_dict, 'Cookies:'))
+
 
 
 		# WSS
-		# important todo: there certainly is case-insesitive string lookup
-		if self.headers.get('upgrade') in ('websocket', 'Websocket', 'WEBSOCKET',):
+		if str(self.headers['upgrade']).lower() == 'websocket':
 			if self.srv_res.cfg['websockets']['action'] == 'reject':
 				self.reject(403)
 				return
@@ -855,12 +763,13 @@ class cl_request:
 				return
 
 			if self.srv_res.cfg['websockets']['action'] == 'accept':
-				# because this is not a wss server
+				# important todo: because this is not a wss server
 				self.reject(421)
 				return
 
 		# make sure this function doesn't trigger twice
 		self.eval_request = lambda: None
+
 
 
 	# Actions
@@ -877,7 +786,7 @@ class cl_request:
 
 	# Send a very simple html document
 	# with a short description of the provided Status Code
-	def reject(self, code=401, hint=''):
+	def reject(self, code:int=401, hint:str=''):
 		self.response.code = code
 		self.response.content_type = 'text/html'
 		self.response.flush_buffer(
@@ -886,7 +795,7 @@ class cl_request:
 			.replace(b'$$hint', str(hint).encode())
 		)
 
-	def redirect(self, target, reason=7, softlink=False):
+	def redirect(self, target, reason:int=7, softlink:bool=False):
 		"""
 		Redirect the request to the target destination.
 		- target: target URL to redirect to
@@ -901,42 +810,50 @@ class cl_request:
 		self.response.send_preflight()
 		self.terminate()
 
-
-	def read_body_stream(self):
+	def read_body_stream(self, no_length_ok:bool=True, autoreject:bool=True, chunksize:int=None):
 		"""
 		(Generator)
 		Progressively read body of the incoming request
 		"""
+
 		# important todo: It's speculated that a request can be without content-length
 		# important todo: chunked encoding support
 		content_length = self.headers.get('content-length')
-		if not content_length:
-			self.request.reject(411)
-			yield b''
-			return
+
+		if not content_length and not no_length_ok:
+			if autoreject:
+				self.request.reject(411)
+			raise MissingContentLength('The client did not provide mandatory Content-Length header')
 
 		content_length = int(content_length)
 		read_progress = 0
-		conlog('Content Length:', content_length)
 
-		# chunksize = self.srv_res.cfg['buffers']['']
-		while True:
-			if read_progress >= content_length:
-				break
-			conlog('Trying to receive data from request...')
-			received_data = self.cl_con.recv(4096)
-			conlog('Reading data from request:', received_data)
-			if not received_data:
-				break
-			yield received_data
-			read_progress += len(received_data)
+		chunksize = chunksize or self.srv_res.cfg['buffers']['stream_receive']
 
+		with DynamicGroupedText('Read Body Stream') as log_group:
+			log_group.print('Content Length:', content_length)
+			while True:
+				if content_length and read_progress >= content_length:
+					break
+				log_group.print('Waiting for data...')
+				received_data = self.cl_con.recv(4096)
+				log_group.print('Got data:', len(received_data))
+				if not received_data:
+					break
+				yield received_data
+				read_progress += len(received_data)
 
-	def read_body(self, as_buf=False):
-		import io
-		buf = io.BytesIO()
-		for chunk in self.read_body_stream():
+	# def read_body(self, as_buf=False, maxsize=-1):
+	def read_body(self, as_buf=False, maxsize=None, no_length_ok:bool=True, autoreject:bool=True, chunksize:int=None):
+		"""
+		Read the entire request body in one go.
+		"""
+		buf = self.srv_res.pylib.io.BytesIO()
+		for chunk in self.read_body_stream(no_length_ok, autoreject, chunksize):
 			buf.write(chunk)
+			if maxsize and buf.tell() > maxsize:
+				self.reject(413)
+				raise PayloadTooLarge(f'The received payload ({buf.tell()}) exceeds the limit ({maxsize})')
 		if as_buf:
 			buf.seek(0, 0)
 			return buf
@@ -944,70 +861,8 @@ class cl_request:
 			return buf.getvalue()
 
 
-	# Utility
-	# =================
-	def parse_kv(self, kvs, separator=',', key_to_lower=True):
-		pairs = kvs.split(separator)
-		result = {}
-		for pair in pairs:
-			pair_split = pair.split('=')
-			if key_to_lower:
-				pair_split[0] = pair_split[0].upper()
-
-			if len(pair_split) == 1:
-				result[pair_split[0]] = True
-				continue
-
-			val = '='.join(pair_split[1:])
-			# important todo: is this really needed ?
-			try:
-				val = float(val)
-			# important todo: generic exceptions are very bad
-			except:
-				pass
-			try:
-				val = int(val)
-			except:
-				pass
-
-			result[pair_split[0]] = val
-
-		return result
-
-
 	# Processed headers
 	# =================
-
-	@property
-	def cookie(self):
-		"""
-		Nicely formatted cookie header
-		"""
-		if self._cookie:
-			return self._cookie
-
-		cookie_data = self.headers.get('cookie')
-		if not cookie_data:
-			return None
-
-		self._cookie = self.parse_kv(cookie_data, separator=';')
-
-		return self._cookie
-
-	# Even though server doesn't support advanced caching...
-	@property
-	def cache_control(self):
-		if self._cache_control:
-			return self._cache_control
-
-		cache_data = self.headers.get('cache-control')
-		if not cache_data:
-			return None
-
-		self._cache_control = self.parse_kv(cookie_data, separator=',')
-
-		return self._cache_control
-
 
 	# A client may ask for an access to a specific chunk of the target file.
 	# In this case a "Range" header is present.
@@ -1041,6 +896,7 @@ class cl_request:
 
 
 
+
 # The server creates "rooms" for every incoming connection.
 # The Base Room does some setup, like evaluating the request.
 # Further actions depend on the server setup:
@@ -1050,7 +906,7 @@ class cl_request:
 # Some of its default services
 
 # Yes, this is a function, not a class. Cry
-def base_room(cl_con, cl_addr, srv_res, route_index=None):
+def htsession(cl_con, cl_addr, srv_res, route_index=None):
 	import time
 	from easy_timings.mstime import perftest
 
@@ -1076,12 +932,33 @@ def base_room(cl_con, cl_addr, srv_res, route_index=None):
 			'time': srv_res.pylib.datetime.datetime.now(),
 		}
 
-		# Evaluate the request
+		# ----------------
+		# Eval request
+		# ----------------
 		with timing_api.record('rq_eval', _internal=True):
 			evaluated_request = cl_request(cl_con, cl_addr, srv_res, timing_api)
+			response = evaluated_request.response
 
 		conlog('Initialized basic room, evaluated request')
 
+		if evaluated_request.terminated:
+			raise ConnectionAbortedError('Connection was aborted early by the client')
+
+		# ----------------
+		# Automatic actions
+		# ----------------
+		route_info = route_index.match_route('/' + evaluated_request.relpath.as_posix(), evaluated_request.method)
+
+		if route_info == 'invalid_method':
+			conlog('Room: invalid method:', evaluated_request.method)
+			evaluated_request.reject(405)
+
+		# Treat options
+		if evaluated_request.method == 'options':
+			access_ctrl = route_info.access_ctrl(evaluated_request.headers, response.headers)
+			access_ctrl.apply_headers()
+			response.headers['Access-Control-Allow-Methods'] = (', '.join(route_info.methods)).upper()
+			response.send_headers_only()
 
 
 		# ----------------
@@ -1091,20 +968,12 @@ def base_room(cl_con, cl_addr, srv_res, route_index=None):
 		# Now either pass the control to the room specified in the config
 		# or the default room
 		if not evaluated_request.terminated:
-			if srv_res.cfg['room_file']:
-				target_func = route_index.match_route('/' + str(evaluated_request.relpath), evaluated_request.method)
-				if target_func == 'invalid_method':
-					conlog('Room: invalid method:', evaluated_request.method)
-					evaluated_request.reject(405)
-				else:
-					if target_func:
-						target_func(
-							evaluated_request,
-							evaluated_request.response,
-							evaluated_request.response.offered_services
-						)
-					else:
-						evaluated_request.reject(403)
+			route_info.func(
+				evaluated_request,
+				evaluated_request.response,
+				evaluated_request.response.offered_services
+			)
+
 
 
 		# ----------------
@@ -1119,8 +988,8 @@ def base_room(cl_con, cl_addr, srv_res, route_index=None):
 				'method': ev_rq.method,
 				'httpver': ev_rq.protocol,
 				'path': ev_rq.trimpath,
-				'usragent': ev_rq.headers.get('user-agent'),
-				'ref': ev_rq.headers.get('referer'),
+				'usragent': ev_rq.headers['user-agent'],
+				'ref': ev_rq.headers['referer'],
 				'rsp_code': ev_rq.response.code,
 			}
 

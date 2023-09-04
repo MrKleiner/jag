@@ -6,13 +6,13 @@ import traceback
 # (this library simply has to be a proper package)
 sys.path.append(str(Path(__file__).parent))
 
-from base_room import base_room
+from jag_http_session import htsession
 import jag_util
-from jag_util import JagConfigBase, NestedProcessControl, conlog
+from jag_util import JagConfigBase, NestedProcessControl, conlog, DynamicGroupedText
 
 from easy_timings.mstime import perftest
 
-
+import jag_http_ents
 
 
 
@@ -195,6 +195,10 @@ class JagHTTPServerResources(JagConfigBase):
 				# Default size of a single chunk when streaming buffers
 				# Default to 5mb
 				'bufstream_chunk_len': (1024**2)*5,
+
+				# Max size of a single chunk when reading streams.
+				# Should not be changed unless you know what you're doing
+				'stream_receive': 4096,
 			}
 		)
 
@@ -280,8 +284,7 @@ def server_worker(skt, sv_resources, worker_idx):
 		conn, address = skt.accept()
 		# print('Worker', worker_idx, 'accepted connection')
 		sv_resources.devtime = time.time()
-		threading.Thread(target=base_room, args=(conn, address, sv_resources, route_index), daemon=True).start()
-
+		threading.Thread(target=htsession, args=(conn, address, sv_resources, route_index), daemon=True).start()
 
 
 
@@ -318,7 +321,7 @@ def sock_server(sv_resources):
 		while True:
 			conn, address = skt.accept()
 			sv_resources.devtime = time.time()
-			threading.Thread(target=base_room, args=(conn, address, sv_resources), daemon=True).start()
+			threading.Thread(target=htsession, args=(conn, address, sv_resources), daemon=True).start()
 
 
 
@@ -373,9 +376,14 @@ def server_process(sv_resources, stfu=False):
 
 
 class JagRoute:
-	def __init__(self, path=None, methods=None):
+	def __init__(self, path=None, methods=None, cors=None, access_ctrl=None, cache_ctrl=None):
 		self.path = path
 		self.methods = methods
+
+		self.cors = cors() if cors else jag_http_ents.CORSAllowance()
+		self.cache_ctrl = cache_ctrl() if cache_ctrl else jag_http_ents.HTTPClientCacheControl()
+		self.access_ctrl = access_ctrl if access_ctrl else jag_http_ents.AccessControl
+
 
 	def __call__(self, func):
 		self.func = func
@@ -385,6 +393,27 @@ class JagRoute:
 
 
 class JagRoutingIndex:
+	"""\
+	The way routing in Jag works is similar to Flask:
+	@JagRoute(path='/sex')
+	def(request, response, services):
+		pass
+
+	Routes can be defined through any python file
+	and must be located in the main body of the script.
+
+	The @JagRoute() decorator transforms functions into classes.
+
+	Each worker spawned by the server loads the said file with
+	importlib. This is why it's very important to hide any executions
+	in the main body of the file behind if __name__ == '__main__':
+	(whenever any module/file is imported - everything inside gets executed)
+
+	The worker then loops through every attribute of the imported file
+	and checks if it's an instance of JagRoute class. 
+	Each route gets written down for later use in HTTP sessions created
+	by the same worker.
+	"""
 	def __init__(self, room_file):
 		import importlib, sys
 
@@ -401,60 +430,66 @@ class JagRoutingIndex:
 		self.default_route = None
 
 	def find_routes(self):
-		for attr in dir(self.custom_module):
-			route_obj = getattr(self.custom_module, attr)
-			if isinstance(route_obj, JagRoute):
-				# if path is not declared - that's a fallback route
-				if not route_obj.path:
-					self.default_route = route_obj.func
-				else:
-					# otherwise - get route info and write it down
-					self.routes.append(
-						(
-							route_obj.path,
-							# convert methods to lowercase
-							# sets are faster to search btw
-							set([str(m).lower() for m in (route_obj.methods or [])]) or None,
-							route_obj.func,
-						)
-					)
+		with DynamicGroupedText('Indexing Routes') as grouplog:
+			for attr in dir(self.custom_module):
+				route_obj = getattr(self.custom_module, attr)
+				if isinstance(route_obj, JagRoute):
+					# if path is not declared - that's a fallback route
+					if not route_obj.path:
+						grouplog.print('Registering default fallback route:', route_obj)
+						self.default_route = route_obj
+					else:
+						# otherwise - get route info and write it down
+
+						# convert methods to lowercase
+						route_obj.methods = set([str(m).lower() for m in (route_obj.methods or [])]) or None
+						route_obj.path = route_obj.path.lower()
+
+						grouplog.print('Registering route:', route_obj)
+						self.routes.append(route_obj)
 
 	def match_route(self, requested_route, requested_method):
 		requested_method = str(requested_method).lower()
 		# Traverse through every declared route
-		for allowed_path, allowed_methods, fnc in self.routes:
-			# Check if requested path matches any of the declared paths
-			print('Validating route', 'Need:', requested_route, 'Allow:', allowed_path)
-			if requested_route.startswith(allowed_path):
-				# Check if requested method matches the declared method of the route
-				# If route doesn't has a declared method - any method is allowed
+		with DynamicGroupedText('Route lookup') as grouplog:
+			# for allowed_path, allowed_methods, fnc in self.routes:
+			for route_info in self.routes:
+				# Check if requested path matches any of the declared paths
+				grouplog.print('Validating route', 'Need:', requested_route, 'Allow:', route_info.path)
+				if requested_route.startswith(route_info.path):
+					# Check if requested method matches the declared method of the route
+					# If route doesn't has a declared method - any method is allowed
 
-				# Logic: If there are declared methods and requested method doesn't
-				# match any of them - deny.
-				conlog('validating methods:', 'Need:', requested_method, 'Allow:', allowed_methods)
-				if allowed_methods and not requested_method in allowed_methods:
-					conlog('Method validation failed:', 'Need:', requested_method, 'Allow:', allowed_methods)
-					return 'invalid_method'
+					# Logic: If there are declared methods and requested method doesn't
+					# match any of them - deny.
+					grouplog.print('Validating methods:', 'Need:', requested_method, 'Allow:', route_info.methods)
+					if route_info.methods and not requested_method in route_info.methods:
+						grouplog.print('Method validation failed:', 'Need:', requested_method, 'Allow:', route_info.methods)
+						# important todo: something that makes a little more sense than returning a string
+						# maybe raising a custom Error ?
+						return 'invalid_method'
 
-				# Logic: If there are no declared methods - allow any method
-				if not allowed_methods:
-					return fnc
+					# Logic: If there are no declared methods - allow any method
+					if not route_info.methods:
+						grouplog.print('Route', route_info.path, 'doesnt restrict methods, allowing')
+						return route_info
 
-				# Logic: If allowed method matches requested method - proceed with execution
-				if requested_method in allowed_methods:
-					return fnc
+					# Logic: If allowed method matches requested method - proceed with execution
+					if requested_method in route_info.methods:
+						grouplog.print('Request method', requested_method, 'matches allowed methods', route_info.methods)
+						return route_info
 
-		# If no route was found - execute default function
-		# Aka the function which was declared strictly like
-		# @JagRoute()
-		conlog('Couldnt find a suitable route.', 'Requested route:', requested_route)
-		return self.default_route
+			# If no route was found - execute default function
+			# Aka the function which was declared strictly like
+			# @JagRoute()
+			grouplog.print('Couldnt find a suitable route.', 'Requested route:', requested_route)
+			return self.default_route
 
-	
+
 
 
 class JagServer(NestedProcessControl):
-	"""
+	"""\
 	The root of the HTTP server.
 	"""
 	def __init__(self, launch_params):
@@ -471,3 +506,11 @@ class JagServer(NestedProcessControl):
 			self.server_process = threading.Thread(target=server_process, args=(self.launch_params,))
 			self.server_process.start()
 			self.running = True
+
+
+
+
+
+
+
+
