@@ -1,5 +1,6 @@
 import threading, io, time, multiprocessing, socket
 from jag_util import print_exception
+from pathlib import Path
 
 _print = print
 def print(*args):
@@ -14,12 +15,11 @@ def print(*args):
 # 	- Records can be sent to the log server by various modules of the server.
 # 	- The payload sent to the log server consists of:
 # 		- 4-byte long int indicating the size of the payload
-# 		- Actual payload data: Pickled logRecord
+# 		- Actual payload data: Pickled LogRecord
 
-# There are different log types, see description of logRecord
-
-class logRecord:
-	"""
+# There are different log types, see description of LogRecord
+class LogRecord:
+	"""\
 	A standard log record.
 
 	record_type:int
@@ -31,7 +31,7 @@ class logRecord:
 	record_data:any=None
 		Initial log record data
 	"""
-	def __init__(self, record_type, record_data=None, dtime=None):
+	def __init__(self, record_type:int, record_data=None, dtime=None):
 		self.record_type = record_type
 		self.log_data = record_data or {}
 
@@ -47,9 +47,8 @@ class logRecord:
 		if isinstance(dtime, str):
 			self.timestamp = dtime
 
-
 	def push(self):
-		"""
+		"""\
 		Push record to the logging server
 		"""
 		self.push = None
@@ -60,7 +59,7 @@ class logRecord:
 				# connect to the logger and send logging data
 				with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as skt:
 					logging_port = os.environ.get('jag_logging_port')
-					if logging_port == None:
+					if not logging_port:
 						return
 					skt.connect(
 						( '127.0.0.1', int(logging_port) )
@@ -75,8 +74,8 @@ class logRecord:
 
 
 
-class logRecordFormatter:
-	"""
+class LogRecordFormatter:
+	"""\
 	Format log record to text according to its type.
 
 	Formats:
@@ -91,7 +90,7 @@ class logRecordFormatter:
 			[timestamp]
 			python error traceback
 	"""
-	def __init__(self, log_record):
+	def __init__(self, log_record:LogRecord):
 		self.record_type = log_record.record_type
 		self.data = log_record.log_data
 		self.record_timestamp = log_record.timestamp
@@ -208,8 +207,8 @@ class logRecordFormatter:
 
 
 # The CEO of log server
-class stasi:
-	"""
+class Stasi:
+	"""\
 	Simple logger.
 	Logs are stored in the user defined/default folder.
 	The name scheme of the log files is as follows:
@@ -222,36 +221,27 @@ class stasi:
 		self.log_file = self.log_dir / 'test.log'
 
 		# init the processor
-		threading.Thread(target=processor, args=(self,), daemon=True).start()
+		threading.Thread(target=log_records_processor, args=(self,), daemon=True).start()
 
 	# queue 
-	def accept_log_record(self, cl_con, cl_addr):
+	def accept_log_record(self, cl_con:socket.socket, cl_addr:tuple[str, int]):
 		# first of all collect the payload
 		try:
 			print('accepting record')
 			# buffer for the payload
 			buf = io.BytesIO()
 
+			# socket file
+			skt_file = cl_con.makefile('rb', buffering=0)
+
 			# get the length of the payload
-			while True:
-				print('receiving length of the request payload')
-				data = cl_con.recv(4)
-				print('received data:', data)
-				buf.write(data)
-				if buf.tell() < 4:
-					continue
-				else:
-					break
-			# convert received bytes to int
-			buf.seek(0, 0)
-			p_len = int.from_bytes(buf.read(4), 'little') - 4
-			buf.seek(0, 2)
+			p_len = int.from_bytes(skt_file.read(4), 'little')
+			print(
+				'Log record payload length:', p_len
+			)
 
 			# receive the remaining payload according to its length
-			while True:
-				if buf.tell() >= p_len:
-					break
-				buf.write(cl_con.recv(65535))
+			buf.write(skt_file.read(p_len))
 
 			print('appended record')
 			# append record to the queue
@@ -270,12 +260,12 @@ class stasi:
 
 # dump a group of log records to a file
 # this function is being run every n seconds as a subprocess
-def dump_log_records(batch, tgt_dir):
+def dump_log_record_batch(batch:list[bytes], tgt_dir:Path):
 	# first, evaluate pickled data
 	import pickle
 
 	for recbytes in batch:
-		log_record = logRecordFormatter(pickle.loads(recbytes))
+		log_record = LogRecordFormatter(pickle.loads(recbytes))
 
 		tgt_file = tgt_dir / f'jag_log.{log_record.type_suffix}.log'
 
@@ -286,11 +276,10 @@ def dump_log_records(batch, tgt_dir):
 			)
 
 
-
 # The processor keeps an eye on the queue and processes items piled up in it
 # This function runs as a thread in a loop from the very beginning of the program
-# and only terminates when the server was shutdown
-def processor(log_ctrl):
+# and only terminates when the server shuts down
+def log_records_processor(log_ctrl):
 	import jag_util
 
 	while True:
@@ -318,31 +307,40 @@ def processor(log_ctrl):
 			del log_ctrl.queue[0]
 
 		# Start the process
-		task = multiprocessing.Process(target=dump_log_records, args=(log_batch, log_ctrl.log_dir,), daemon=True)
+		task = multiprocessing.Process(
+			target=dump_log_record_batch,
+			args=(log_batch, log_ctrl.log_dir,),
+			daemon=True
+		)
 		task.start()
 		task.join()
 
 
+# Bsically the root of the logging server
+# this function creates a Stasi class (log server manager)
+# and listens for incoming connections
+def jag_log_server_process(sv_resources, sock_obj:socket.socket):
+	import os
 
-
-# listener accepting incoming requests
-def gestapo(sv_resources, sock_obj):
 	# start listening the socket
 	sock_obj.listen(0)
-	import os
 
 	_print('Logging PID:', os.getpid())
 
 	# initialize the log controller
 	# this class contains the queue and a method for accepting new queue items
-	log_ctrl = stasi(sv_resources)
+	log_ctrl = Stasi(sv_resources)
 
 	# listen for incoming log records connections
 	while True:
 		try:
 			conn, address = sock_obj.accept()
 			print('Got logger request')
-			threading.Thread(target=log_ctrl.accept_log_record, args=(conn, address), daemon=True).start()
+			threading.Thread(
+				target=log_ctrl.accept_log_record,
+				args=(conn, address),
+				daemon=True
+			).start()
 		except ConnectionAbortedError as err:
 			pass
 		except ConnectionResetError as err:

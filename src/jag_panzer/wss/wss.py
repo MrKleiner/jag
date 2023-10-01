@@ -1,9 +1,3 @@
-
-"""
-wss
-"""
-
-
 """
 Websockets are funny.
 They're cool, but, as is it usually is with web tech - retarded.
@@ -44,7 +38,6 @@ Each time a payload is sent in either direction -
 +---------------------------------------------------------------+
 
 """
-
 
 # -------------------
 #  Long story short
@@ -149,8 +142,6 @@ Data: 0 1 2 3 4 5 6 7 8 9 ...
 
 """
 
-
-
 """
 A message can consist of multiple frames.
 
@@ -166,22 +157,16 @@ A message can consist of multiple frames.
 +-------------------------------------------------------+
 """
 
-
-
-
-
 # There's something deeply wrong with how this package imports things
 
 from pathlib import Path
-import sys
+import sys, socket
+
 # print('WSS sys path BEFORE tweaks:', *sys.path, sep='\n')
 sys.path.append(str(Path(__file__).parent.parent))
 # print('WSS sys path AFTER tweaks:', *sys.path, sep='\n')
 
-from jag_util import clamp as clamp_num
-
-
-
+from ..jag_util import clamp as clamp_num
 
 
 # use the first fastest algorithm for XORing
@@ -211,8 +196,8 @@ from jag_util import clamp as clamp_num
 # and in the end there's an assert comparing hex digests of the newly generated result.
 # If nothing goes wrong and hashes match - the method is used.
 # Default python method is used as a fallback if all the attempts fail.
-class masking_algo:
-	def __init__(self, session):
+class XORMaskingAlgo:
+	def __init__(self, session:'WSession'):
 		import sys, platform
 		self.session = session
 		self.byteorder = sys.byteorder
@@ -287,13 +272,13 @@ class masking_algo:
 		print('Using default')
 		self.sample_data = None
 
-
 	# the slowest method possible
-	def default_slow(self, data, mask):
+	@staticmethod
+	def default_slow(data, mask):
 		# 40% speedup from original approach
 		bt_array = bytearray(data)
 		for idx in range(len(bt_array)):
-			bt_array[idx] ^= mask[idx%4]
+			bt_array[idx] ^= mask[idx % 4]
 
 		return bytes(bt_array)
 
@@ -317,17 +302,20 @@ class masking_algo:
 	def c_fastest(self, data, mask):
 		return self.fast_c(data, mask)
 
-
+	def apply_mask(self, data:bytes, mask:bytes) -> bytes:
+		"""\
+		Apply cyclic XOR to bytes
+		"""
+		pass
 
 
 # Default params of a WSS session
-class wSessionDefaults:
-	recv_as_stream = False
-	send_chunksize = 4096
-	recv_chunksize = 4096
-	msg_max_size = (1024**2)*32
+class WSessionDefaults:
+	recv_as_stream =  False
+	send_chunksize =  4096
+	recv_chunksize =  4096
+	msg_max_size =    (1024 ** 2) * 32
 	masked_response = False
-
 
 
 # important todo: https://youtu.be/m_a0fN48Alw
@@ -337,18 +325,19 @@ class wSessionDefaults:
 
 # important todo: there's a built-in feature to make function change upon triggering
 # aka it's no longer needed to replace the class method with a lambda
-class wss_session:
+class WSession:
 	"""
 	Standard WSS session.
 	- connection:socket.socket client connection.
 	- incoming_hshake:list=None
-	    List representing header fields in HTTP format: ['Key: Value'].
-	    If left None - the session would try getting the header fields
-	    from the client.
-	    If a list representing a valid WSS switch request is passed - 
-	    the session would send a WSS handshake response.
+		List representing header fields in HTTP format: ['Key: Value'].
+		If left None - the session would try getting the header fields
+		from the client.
+		If a list representing a valid WSS switch request is passed -
+		the session would send a WSS handshake response.
 	"""
-	def __init__(self, connection, incoming_hshake=None):
+
+	def __init__(self, connection:socket.socket, incoming_hshake=None):
 
 		# import some commonly used libs
 		import base64, json, hashlib, io, struct, sys, collections, os, socket, secrets
@@ -366,12 +355,12 @@ class wss_session:
 		self.secrets = secrets
 
 		# defaults
-		self.defaults = wSessionDefaults()
+		self.defaults = WSessionDefaults()
 		# client connection
 		self.connection = connection
 
 		# choose the best masking algo available
-		decision = masking_algo(self)
+		decision = XORMaskingAlgo(self)
 		self.apply_mask = decision.apply_mask
 
 		# aligned receive solution
@@ -383,9 +372,7 @@ class wss_session:
 		# respond to the client with a wss handshake
 		self.respond_handshake(incoming_hshake)
 		# make sure it never happens again
-		self.respond_handshake = lambda: None
-
-
+		self.respond_handshake = lambda a: None
 
 	# Aligned receive
 	# =================
@@ -428,10 +415,10 @@ class wss_session:
 				# print('equasion', max(1, min(chunk_size, bufsize-len(buf))))
 				# data = self.connection.recv(max(1, min(chunk_size, bufsize-len(buf))))
 				data = self.connection.recv(
-					clamp_num(chunk_size, 1, bufsize-len(buf))
+					clamp_num(chunk_size, 1, bufsize - len(buf))
 				)
 				buf += data
-				# print('Received:', str(len(data)).ljust(20), 'target:', str(bufsize).ljust(20), 'has:', str(len(buf)).ljust(20), 'want:', str(max(1, min(chunk_size, length-len(buf)))).ljust(20))
+			# print('Received:', str(len(data)).ljust(20), 'target:', str(bufsize).ljust(20), 'has:', str(len(buf)).ljust(20), 'want:', str(max(1, min(chunk_size, length-len(buf)))).ljust(20))
 		else:
 			buf = self.io.BytesIO()
 			while True:
@@ -440,24 +427,22 @@ class wss_session:
 
 				# data = self.connection.recv(max(1, min(chunk_size, bufsize-buf.tell())))
 				data = self.connection.recv(
-					clamp_num(chunk_size, 1, bufsize-buf.tell())
+					clamp_num(chunk_size, 1, bufsize - buf.tell())
 				)
 				buf.write(data)
 
 	def aligned_recv_linux(self, bufsize, chunk_size=None):
 		return self.connection.recv(bufsize, self.socket.MSG_WAITALL)
 
-
-
 	# Automated
 	# =================
 	def respond_handshake(self, incoming_hshake):
 		lines = None
-		# If header fields were not provided on session init - 
+		# If header fields were not provided on session init -
 		# it means they have to be retrieved from the client.
 		if not incoming_hshake:
-			from jag_http_session import headerFields
-			header_buffer = headerFields(self.connection, 65535)
+			from ..jag_http_session import HeaderFields
+			header_buffer = HeaderFields(self.connection, 65535)
 			header_buffer.collect()
 			lines = header_buffer.lines
 		elif type(incoming_hshake) in (list, tuple, set):
@@ -498,8 +483,6 @@ class wss_session:
 			self.connection.sendall(f"""{key}: {resolve[key]}\r\n""".encode())
 		self.connection.sendall(b'\r\n')
 
-
-
 	# Interface
 	# =================
 
@@ -509,18 +492,17 @@ class wss_session:
 		# print('terminating, because', reason)
 		# self.connection.sendall(self.construct_frame(reason, 0x1))
 		self.connection.close()
-		# self.sys.exit()
 
 	# Receive a message
-	def recv_message(self, as_stream:bool=None, maxsize:bool=None, chunksize:bool=None):
+	def recv_message(self, as_stream:bool = None, maxsize:bool = None, chunksize:bool = None):
 		"""
 		Receive a message from the client.
 		- as_stream:bool=None 
-		    Whether to receive the message as a stream or all at once.
+			Whether to receive the message as a stream or all at once.
 		- maxsize:int
-		    Maximum size of the received message
+			Maximum size of the received message
 		"""
-		msg_receiver = wssMessageReceiver(
+		msg_receiver = WssMessageReceiver(
 			self,
 			maxsize or self.defaults.msg_max_size,
 			chunksize or self.defaults.recv_chunksize
@@ -536,25 +518,25 @@ class wss_session:
 
 	# Send a message
 	# Simply send a message, with no extra fuckery
-	def send_message(self, data, msg_type:str='binary', chunksize:bool=None, masked:bool=None):
+	def send_message(self, data, msg_type: str = 'binary', chunksize: bool = None, masked: bool = None):
 		"""
 		Send a WSS message
 		- data:bytes|buffer
 			Data to send.
 			If buffer is specified - chunksize is used
 		"""
-		masked = masked if masked != None else self.defaults.masked_response
+		masked = masked if masked is not None else self.defaults.masked_response
 
 		if isinstance(data, bytes):
-			with wssMessageSender(self, masked, msg_type) as msg:
+			with WssMessageSender(self, masked, msg_type) as msg:
 				msg.send_data(data, True)
 			return
 		else:
-			chunksize = chunksize if chunksize != None else self.defaults.send_chunksize
+			chunksize = chunksize if chunksize is not None else self.defaults.send_chunksize
 			msg_len = data.seek(0, 2)
 			sent = 0
 			data.seek(0, 0)
-			with wssMessageSender(self, masked, msg_type) as msg:
+			with WssMessageSender(self, masked, msg_type) as msg:
 				while True:
 					chunk = data.read(chunksize)
 					sent += chunk
@@ -565,30 +547,29 @@ class wss_session:
 						msg.send_data(data, False)
 
 	# Stream a message of unknown size
-	def stream_message(self, msg_type:str='binary', masked:bool=None):
-		masked = masked if masked != None else self.defaults.masked_response
-		return wssMessageSender(self, masked, msg_type)
+	def stream_message(self, msg_type: str = 'binary', masked: bool = None):
+		masked = masked if masked is not None else self.defaults.masked_response
+		return WssMessageSender(self, masked, msg_type)
 
 
-
-
-class wssFrameMask:
+class WssFrameMask:
 	"""
 	WSS frame mask.
 	Simplified XOR interface.
 	- session:wss_session
-	    Parent session.
+		Parent session.
 	- mask_bytes:bytes
-	    Mask bytes to XOR with.
+		Mask bytes to XOR with.
 	"""
-	def __init__(self, session, mask_bytes):
+
+	def __init__(self, session:WSession, mask_bytes:bytes):
 		self.session = session
 		self.xor = self.session.apply_mask
 		# self._bytes_original = mask_bytes
-		self.bytes_static = mask_bytes
+		self.bytes_static:bytes = mask_bytes
 		self.bytes = self.session.collections.deque(list(mask_bytes))
 
-	def apply(self, data):
+	def apply(self, data) -> bytes:
 		"""
 		Apply mask to data.
 		- data:bytes
@@ -599,9 +580,7 @@ class wssFrameMask:
 		return xored
 
 
-
-
-class wssFrameFlags:
+class WssFrameFlags:
 	# 4 flag bits
 	fin = None
 	rsv1 = None
@@ -616,9 +595,7 @@ class wssFrameFlags:
 	opcode = None
 
 
-
-
-class wssOpcodes:
+class WssOpcodes:
 	continuation = 0x0
 	is_text =      0x1
 	is_binary =    0x2
@@ -627,13 +604,12 @@ class wssOpcodes:
 	pong =         0xA
 
 
-
-class wssFrame:
+class WssFrame:
 	"""
 	Construct a WSS frame info either from bytes or a dict of params.
 
 	- session:wss_session
-	    Parent session
+		Parent session
 	- construct_info:dict
 		This data should represent all the info needed to
 		construct a payload header.
@@ -651,26 +627,26 @@ class wssFrame:
 				'payload_size': int,
 			}
 	"""
-	def __init__(self, session, construct_info=None):
+
+	def __init__(self, session:WSession, construct_info:dict=None):
 		self.session = session
 
-		self.flags = wssFrameFlags()
+		self.flags = WssFrameFlags()
 
 		self.length = None
 		self.mask = None
 
 		if isinstance(construct_info, dict):
-			self.flags.fin =    construct_info['flags']['fin']
-			self.flags.rsv1 =   construct_info['flags']['rsv1']
-			self.flags.rsv2 =   construct_info['flags']['rsv2']
-			self.flags.rsv3 =   construct_info['flags']['rsv3']
+			self.flags.fin = construct_info['flags']['fin']
+			self.flags.rsv1 = construct_info['flags']['rsv1']
+			self.flags.rsv2 = construct_info['flags']['rsv2']
+			self.flags.rsv3 = construct_info['flags']['rsv3']
 			self.flags.opcode = construct_info['flags']['opcode']
 			self.flags.masked = construct_info['flags']['masked']
-			self.length =       construct_info['payload_size']
+			self.length = construct_info['payload_size']
 
 			if self.flags.masked:
 				self.create_mask()
-
 
 	def eval_flags(self, data):
 		"""
@@ -697,23 +673,21 @@ class wssFrame:
 				bits = struct.unpack('!B', data)
 
 			# extract data
-			self.flags.fin =    True if bits & 0b10000000 else False
-			self.flags.rsv1 =   True if bits & 0b01000000 else False
-			self.flags.rsv2 =   True if bits & 0b00100000 else False
-			self.flags.rsv3 =   True if bits & 0b00010000 else False
-			self.flags.opcode =         bits & 0b00001111
+			self.flags.fin = True if bits & 0b10000000 else False
+			self.flags.rsv1 = True if bits & 0b01000000 else False
+			self.flags.rsv2 = True if bits & 0b00100000 else False
+			self.flags.rsv3 = True if bits & 0b00010000 else False
+			self.flags.opcode = bits & 0b00001111
 
 			return
 
-
 		if isinstance(data, dict):
-			self.flags.fin =    data['fin']
-			self.flags.rsv1 =   data['rsv1']
-			self.flags.rsv2 =   data['rsv2']
-			self.flags.rsv3 =   data['rsv3']
+			self.flags.fin = data['fin']
+			self.flags.rsv1 = data['rsv1']
+			self.flags.rsv2 = data['rsv2']
+			self.flags.rsv3 = data['rsv3']
 			self.flags.opcode = data['opcode']
 			self.flags.masked = data['masked']
-
 
 	def eval_mask_state(self, data):
 		"""
@@ -725,7 +699,6 @@ class wssFrame:
 		if isinstance(data, bytes):
 			data = self.session.struct.unpack('!B', data)
 		self.flags.masked = True if data & 0b10000000 else False
-
 
 	def eval_length(self, data, strip_mask=True):
 		"""
@@ -759,7 +732,6 @@ class wssFrame:
 				data = data & 0b01111111
 			self.length = data
 
-
 	def create_mask(self, data=None):
 		"""
 		Create mask from bytes.
@@ -769,8 +741,7 @@ class wssFrame:
 		"""
 		if not data:
 			data = self.session.secrets.token_bytes(4)
-		self.mask = wssFrameMask(self.session, data)
-
+		self.mask = WssFrameMask(self.session, data)
 
 	def construct_header(self):
 		"""
@@ -781,17 +752,17 @@ class wssFrame:
 
 		# First byte
 		head1 = (
-			# FIN bit. 1 = fin, 0 = continue
-			(0b10000000 if self.flags.fin else 0)
-			# Useless shit (poor documentation + not supported by browsers)
-			| (0b01000000 if self.flags.rsv1 else 0)
-			| (0b00100000 if self.flags.rsv2 else 0)
-			| (0b00010000 if self.flags.rsv3 else 0)
-			# The opcode of the first frame in a sequence of fragmented frames
-			# has to specify the type of the sequence (bytes/text/ping)
-			# whereas all the following fragmented frames should have an opcode of 0x0
-			# (finaly frame is marked with the fin bit)
-			| self.flags.opcode
+				# FIN bit. 1 = fin, 0 = continue
+				(0b10000000 if self.flags.fin else 0)
+				# Useless shit (poor documentation + not supported by browsers)
+				| (0b01000000 if self.flags.rsv1 else 0)
+				| (0b00100000 if self.flags.rsv2 else 0)
+				| (0b00010000 if self.flags.rsv3 else 0)
+				# The opcode of the first frame in a sequence of fragmented frames
+				# has to specify the type of the sequence (bytes/text/ping)
+				# whereas all the following fragmented frames should have an opcode of 0x0
+				# (finaly frame is marked with the fin bit)
+				| self.flags.opcode
 		)
 
 		# Second byte
@@ -804,17 +775,17 @@ class wssFrame:
 			header = struct.pack('!BBQ', head1, head2 | 127, length)
 
 		if self.flags.masked:
-			return (header + self.mask.bytes_static)
+			return header + self.mask.bytes_static
 		else:
 			return header
 
 
-
-class wssMessageReceiver:
+class WssMessageReceiver:
 	"""
 	Receive a WSS message.
 	- session:wss_session
 	"""
+
 	def __init__(self, session, maxsize=None, chunksize=None):
 		self.session = session
 		self.connection = self.session.connection
@@ -824,10 +795,9 @@ class wssMessageReceiver:
 
 		self.message_type = 0x2
 
-
 	def receive_frame(self):
 		# First, initialize new frame
-		wframe = wssFrame(self.session)
+		wframe = WssFrame(self.session)
 
 		# First - await 2 header essential header bytes
 		hbyte1, hbyte2 = self.session.aligned_receive(2)
@@ -864,7 +834,6 @@ class wssMessageReceiver:
 			else:
 				yield data
 
-
 	def data_stream(self):
 		# Receive the first frame of the message.
 		# Browsers usually split larger messages into ~512kb chunks
@@ -885,16 +854,14 @@ class wssMessageReceiver:
 			frame_info = next(frame_receiver)
 
 
-
-
-
-class wssMessageSender:
+class WssMessageSender:
 	"""
 	Stream a message to the client
 	Perfect for large messages of undefined length
 	- session:wss_session
 	"""
-	def __init__(self, session, masked:bool=False, msg_type:str='binary'):
+
+	def __init__(self, session, masked: bool = False, msg_type: str = 'binary'):
 		"""
 		- session:wss_session
 		- msg_type:str='binary'
@@ -905,11 +872,11 @@ class wssMessageSender:
 		self.first_frame = True
 		self.closed = False
 
-		self.msg_type = wssOpcodes.is_binary
+		self.msg_type = WssOpcodes.is_binary
 		if msg_type.lower() == 'binary':
-			self.msg_type = wssOpcodes.is_binary
+			self.msg_type = WssOpcodes.is_binary
 		if msg_type.lower() == 'text':
-			self.msg_type = wssOpcodes.is_text
+			self.msg_type = WssOpcodes.is_text
 
 	def __enter__(self):
 		return self
@@ -918,15 +885,15 @@ class wssMessageSender:
 		# Honestly, piss off
 		# who tf cares?
 		if not self.closed:
-			frame = wssFrame(
+			frame = WssFrame(
 				self.session,
 				{
 					'flags': {
-						'fin':    True,
-						'rsv1':   False,
-						'rsv2':   False,
-						'rsv3':   False,
-						'opcode': wssOpcodes.continuation,
+						'fin': True,
+						'rsv1': False,
+						'rsv2': False,
+						'rsv3': False,
+						'opcode': WssOpcodes.continuation,
 						'masked': self.masked,
 					},
 					'payload_size': 0,
@@ -934,7 +901,7 @@ class wssMessageSender:
 			)
 			self.connection.sendall(frame.construct_header())
 
-	def send_data(self, data:bytes, last:bool=False):
+	def send_data(self, data: bytes, last: bool = False):
 		"""
 		Send a frame.
 		- data:bytes
@@ -942,15 +909,15 @@ class wssMessageSender:
 		if last:
 			self.closed = True
 
-		frame = wssFrame(
+		frame = WssFrame(
 			self.session,
 			{
 				'flags': {
-					'fin':    last,
-					'rsv1':   False,
-					'rsv2':   False,
-					'rsv3':   False,
-					'opcode': self.msg_type if self.first_frame else wssOpcodes.continuation,
+					'fin': last,
+					'rsv1': False,
+					'rsv2': False,
+					'rsv3': False,
+					'opcode': self.msg_type if self.first_frame else WssOpcodes.continuation,
 					'masked': self.masked,
 				},
 				'payload_size': len(data),
@@ -965,9 +932,3 @@ class wssMessageSender:
 
 		# Send the payload itself
 		self.connection.sendall(data)
-
-
-
-
-
-

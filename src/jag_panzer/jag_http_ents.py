@@ -19,9 +19,9 @@ class HTTPHeaderKV:
 	Cache-Control: key=value, key, key=value
 	"""
 
-	kv_dict = {}
+	kv_dict:dict = {}
 
-	def __init__(self, input_data=None):
+	def __init__(self, input_data=None, delimeter:str='; ', smart:bool=False):
 		self.accepted_types = (str, bytes, HTTPHeaderKV, dict, type(None))
 		if not type(input_data) in self.accepted_types:
 			raise TypeError(f'Input header kv type must be one of {self.accepted_types}, not {type(input_data)}')
@@ -29,7 +29,7 @@ class HTTPHeaderKV:
 		if type(input_data) in (str, bytes):
 			if isinstance(input_data, bytes):
 				input_data = input_data.decode()
-			self.kv_dict_from_string(input_data)
+			self.kv_dict_from_string(input_data, delimeter=delimeter, smart=smart)
 
 		if isinstance(input_data, dict):
 			self.kv_dict = input_data
@@ -40,13 +40,23 @@ class HTTPHeaderKV:
 
 	# Consume input
 	# =======================
-	def kv_dict_from_string(self, kvstring:str):
-		pairs = kvstring.split(', ')
+	def kv_dict_from_string_smart(self, kvstring:str):
+		kname = self.kv_dict.get('fuck')
+		for c in kvstring:
+			break
+
+	def kv_dict_from_string(self, kvstring:str, delimeter:str='; ', smart:bool=False):
+		if smart:
+			self.kv_dict_from_string_smart(kvstring)
+			return
+
+		pairs = kvstring.split(delimeter)
 		for pair in pairs:
 			p_split = pair.split('=')
 			if len(p_split) == 1:
 				self.kv_dict[p_split[0]] = True
-			if len(p_split) >= 1:
+				continue
+			if len(p_split) > 1:
 				self.kv_dict[p_split[0]] = p_split[1]
 
 
@@ -63,7 +73,7 @@ class HTTPHeaderKV:
 			pairs.append(
 				'='.join((k, str(v)))
 			)
-		return ', '.join(pairs)
+		return '; '.join(pairs)
 
 
 	# Edit
@@ -76,7 +86,7 @@ class HTTPHeaderKV:
 		del self.kv_dict[key]
 	def __iter__(self):
 		for k, v in self.kv_dict.items():
-			yield (k, v)
+			yield k, v
 	def __contains__(self, value):
 		return value in self.kv_dict
 
@@ -89,7 +99,7 @@ class HTTPHeaderKV:
 class HTTPHeaders:
 	"""\
 	A set of HTTP headers, excluding startline.
-	
+
 	input_data is treated according to type:
 	    - list|tuple|set: a list of raw encoded/decoded header fields, eg b'Cache-Control: no-store\r\n'
 	    - dict: Header Name: Header Content
@@ -109,9 +119,9 @@ class HTTPHeaders:
 	    - get_all(name) would return a list of all the attributes matching the name.
 	"""
 
-	
 
-	fields:list = set()
+
+	fields:set = set()
 
 	def __init__(self, input_data=None):
 		self.accepted_types = (list, tuple, set, HTTPHeaders, dict, type(None))
@@ -130,7 +140,8 @@ class HTTPHeaders:
 
 	# Shared util
 	# =======================
-	def field_to_kv(self, field:bytes|str):
+	@staticmethod
+	def field_to_kv(field:bytes|str):
 		"""\
 		b'Cache-Control: no-store\r\n'
 		to
@@ -142,7 +153,7 @@ class HTTPHeaders:
 
 		field_split = field.split(': ')
 
-		return (field_split[0].lower(), ': '.join(field_split[1:]))
+		return field_split[0].lower(), ': '.join(field_split[1:])
 
 
 	# Consuming input data
@@ -214,7 +225,7 @@ class HTTPHeaders:
 	def get_all(self, hname:str):
 		"""Return a list of all the headers matching the requested name"""
 		hname = str(hname).lower()
-		return [(hn, hv) for hn, hv in self.fields]
+		return [(hn, hv) for hn, hv in self.fields if hn == hname]
 
 
 	# Dumping headers
@@ -286,7 +297,7 @@ class HTTPDateTime:
 			self.dtime = input_data.dtime
 
 		# init new datetime
-		if input_data == None:
+		if input_data is None:
 			self.dtime = datetime.datetime.now(datetime.timezone.utc)
 
 		# initial time
@@ -294,26 +305,30 @@ class HTTPDateTime:
 
 	# Consuming input data
 	# =======================
-	def as_utc(self, dtime:datetime.datetime):
+	@staticmethod
+	def as_utc(dtime:datetime.datetime):
 		"""Return datetime as UTC timezone"""
 		return dtime.astimezone(datetime.timezone.utc)
 
-	def dtime_from_http_date(self, dtime_string:str):
+	@classmethod
+	def dtime_from_http_date(cls, dtime_string:str):
 		"""HTTP Date string to datetime.datetime in UTC"""
-		return self.as_utc(
+		return cls.as_utc(
 			datetime.datetime.strptime(dtime_string, '%a, %d %b %Y %H:%M:%S %Z')
 		)
 
-	def dtime_from_unix_stamp(self, unix_stamp:int):
+	@classmethod
+	def dtime_from_unix_stamp(cls, unix_stamp:int):
 		"""UNIX integer timestamp to datetime.datetime in UTC"""
-		return self.as_utc(
+		return cls.as_utc(
 			datetime.datetime.fromtimestamp(unix_stamp)
 		)
 
 
 	# Util
 	# =======================
-	def time_to_seconds(self, days=0, hours=0, minutes=0, seconds=0, weeks=0):
+	@staticmethod
+	def time_to_seconds(days:int=0, hours:int=0, minutes:int=0, seconds:int=0, weeks:int=0) -> int:
 		"""\
 		days, hours, minutes ...
 		to seconds
@@ -493,20 +508,20 @@ class HTTPCachedResource:
 	"""
 
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders, cl_caching:HTTPClientCacheControl):
-		self.request_headers = request_headers
+		self.request_headers =  request_headers
 		self.response_headers = response_headers
-		self.cl_caching = cl_caching
+		self.cl_caching =       cl_caching
 
 		self.datenow = HTTPDateTime()
 
 		# todo: there HAS to be a better way of doing this
-		self.private = cl_caching.private
-		self.must_revalidate = cl_caching.must_revalidate
-		self.no_store = cl_caching.no_store
-		self.immutable = cl_caching.immutable
-		self._max_age = cl_caching.max_age
+		self.private =            cl_caching.private
+		self.must_revalidate =    cl_caching.must_revalidate
+		self.no_store =           cl_caching.no_store
+		self.immutable =          cl_caching.immutable
+		self._max_age =           cl_caching.max_age
 		self.upd_cache_ctrl_header()
-		self.etag_enabled = cl_caching.etag_enabled
+		self.etag_enabled =       cl_caching.etag_enabled
 		self.date_stamp_enabled = cl_caching.date_stamp_enabled
 
 
@@ -523,18 +538,18 @@ class HTTPCachedResource:
 		if not file.is_file():
 			raise FileNotFoundError(f'The target file {str(file)} does not exist')
 
-		info = info.stat()
+		info = file.stat()
 
-		self.headers['last-modified'] = HTTPDateTime(info.st_mtime)
+		self.response_headers['last-modified'] = HTTPDateTime(info.st_mtime)
 
 		if (self.etag_enabled and etag != False) or etag == True:
 			with open(str(file), 'rb') as fbuf:
-				self.headers['etag'] = jag_util.progrssive_hash(fbuf, hashlib.md5, 50)
+				self.response_headers['etag'] = jag_util.progrssive_hash(fbuf, hashlib.md5, 50)
 
 	def max_age(self, days=0, hours=0, minutes=0, seconds=0, weeks=0):
 		"""Set max age of a response resource"""
-		if (days + hours + minutes + seconds + weeks):
-			self._max_age = self.cl_caching.time_to_seconds(days, hours, minutes, seconds, weeks)
+		if days + hours + minutes + seconds + weeks:
+			self._max_age = HTTPDateTime.time_to_seconds(days, hours, minutes, seconds, weeks)
 
 			self.upd_cache_ctrl_header()
 
@@ -624,17 +639,21 @@ class AccessControl:
 	allow_origins = '*'
 
 	# e.g. sourcetricks.eu
-	home_origin = None
+	home_origin:str|None = None
 
-	# indicate which response headers should be made available to scripts
+	# indicate which response headers should be made available to js scripts
 	# running in the browser, in response to a cross-origin request.
 	# Syntax: ['header-name', 'header-name' ...] OR '*'
-	expose_headers = None
+	expose_headers:list[str]|tuple[str]|set[str]|str = None
 
 	# Tell browsers whether to expose the response
 	# to the frontend JavaScript code
 	# when the request's credentials mode(Request.credentials) is include.
-	allow_credentials = None
+	allow_credentials:str = None
+
+	# whether to respond to the OPTIONS requests automatically
+	# and omit user function execution
+	options_auto_negotiation:bool = True
 
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders):
 		self.request_headers = request_headers
@@ -643,13 +662,13 @@ class AccessControl:
 	def apply_headers(self):
 		"""\
 		This is not needed for simple GET requests.
-		Only preflighted requests and extrenal origin requests need this info.
+		Only preflighted (OPTIONS, ...) requests and extrenal origin requests need this info.
 		"""
 
 		if self.expose_headers and 'Access-Control-Request-Headers' in self.request_headers:
 			self.response_headers['Access-Control-Expose-Headers'] = '*' if self.expose_headers == '*' else ', '.join(self.expose_headers)
 
-		if self.allow_credentials != None:
+		if self.allow_credentials is not None:
 			self.response_headers['Access-Control-Allow-Credentials'] = str(self.allow_credentials).lower()
 
 		# This only works if "Origin" header is present in the request
@@ -666,29 +685,34 @@ class AccessControl:
 
 class CORSAllowance:
 	"""\
-	Control browser's CORS behaviour
+	Control browser's CORS behaviour.
+
 	This is only needed when a client requests, lets say index.html,
 	aka signal the browser which urls it may try connecting to
 	in the first place.
 	
-	'self' IS A SEPARATE BOOLEAN
+	``'self'`` IS A SEPARATE BOOLEAN
 
-	Syntax:
-	[
-		( '<directive>', ('url', 'url' ...) ),
-		( 'connect-src', ('url', 'url' ...) ),
-	]
+	Syntax::
+
+	    [
+	        ( '<directive>', ('url', 'url' ...) ),
+	        ( 'connect-src', ('url', 'url' ...) ),
+	    ]
 	"""
 
 	# The policy declaration itself
-	policy = None
+	policy:list[tuple[str, tuple[str]]] = None
 
 	# This should always be True, unless there are some VERY specific needs
-	include_self = True
+	include_self:bool = True
 
 
 	def __init__(self):
-		"""Init method precaches the CORS string as it may be quite large"""
+		"""\
+		Init method precaches the CORS string as it may be quite large
+		and (presumably) never changes while the server is running.
+		"""
 		self.cors_string = ''
 
 		if self.policy:
@@ -712,12 +736,13 @@ class Cookies:
 	""" BISCUITS """
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders):
 		init_data = request_headers['cookie']
-		self.request_cookies = HTTPHeaderKV(init_data)
-		self.response_cookies = HTTPHeaderKV()
+		self.request_cookies:HTTPHeaderKV = HTTPHeaderKV(init_data)
+		self.response_headers:HTTPHeaders = response_headers
+		# self.response_cookies = HTTPHeaderKV()
 
 
-	def add_cookie(self, cname, cval, params=None):
-		"""
+	def add_cookie(self, cname, cval, params:dict|None=None):
+		"""\
 		Adds one Set-Cookie header per call.
 		"expires" parameter accepts datetime objects.
 		"""
@@ -737,6 +762,21 @@ class Cookies:
 			cookie_params['Expires'] = HTTPDateTime(expires)
 
 		self.response_headers['set-cookie'] = f'{cname}={cval}; {str(HTTPHeaderKV(cookie_params))}'
+
+
+
+class ByteRange:
+	"""\
+	Utilities for managing byterange requests and responses.
+	"""
+	def __init__(self, data):
+		pass
+
+
+
+
+
+
 
 
 

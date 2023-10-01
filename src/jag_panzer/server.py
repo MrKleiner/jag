@@ -15,7 +15,6 @@ from easy_timings.mstime import perftest
 import jag_http_ents
 
 
-
 # Path
 # jag_util
 # socket
@@ -28,7 +27,7 @@ import jag_http_ents
 # struct
 # io
 # multiprocessing
-class pylib_preload:
+class PyLibCache:
 	"""
 	Precache python libraries.
 	Cry all you want, but this reduces disk load
@@ -89,9 +88,11 @@ class JagHTTPServerResources(JagConfigBase):
 	some preloaded python libraries,
 	and other stuff
 	"""
-	def __init__(self, init_config=None):
-		from mimes.mime_types_base import base_mimes
-		from mimes.mime_types_base import base_mimes_signed
+
+	pylib:PyLibCache = None
+
+	def __init__(self, init_config:dict):
+		from mimes.mime_types_base import base_mimes, base_mimes_signed
 		from response_codes import codes as http_response_codes
 
 		from pathlib import Path
@@ -256,28 +257,22 @@ class JagHTTPServerResources(JagConfigBase):
 		)
 
 		# ensure the default folder exists
-		if self.cfg['logging']['logs_dir'] == None:
+		if self.cfg['logging']['logs_dir'] is None:
 			self.cfg['logging']['logs_dir'] = logdir_selector[platform.system().lower()]
 			self.cfg['logging']['logs_dir'].mkdir(parents=True, exist_ok=True)
 
-
 	def reload_libs(self):
 		# preload python libraries
-		self.pylib = pylib_preload()
-
-
-
-
+		self.pylib:PyLibCache = PyLibCache()
 
 
 
 def server_worker(skt, sv_resources, worker_idx):
 	sv_resources.reload_libs()
 
-	custom_room_func = None
 	if sv_resources.cfg['room_file']:
 		route_index = JagRoutingIndex(sv_resources.cfg['room_file'])
-		route_index.find_routes()
+		route_index.index_routes()
 
 	print(f"""Worker {worker_idx+1}/{sv_resources.cfg['multiprocessing']['worker_count']} initialized""")
 	while True:
@@ -298,6 +293,7 @@ def sock_server(sv_resources):
 	# Create the Server object
 	skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+	# Bind on all interfaces
 	skt.bind(
 		('', port)
 	)
@@ -327,7 +323,7 @@ def sock_server(sv_resources):
 
 def logger_process(sv_resources, sock_obj):
 	import jag_logging
-	jag_logging.gestapo(sv_resources, sock_obj)
+	jag_logging.jag_log_server_process(sv_resources, sock_obj)
 
 
 
@@ -335,7 +331,7 @@ def logger_process(sv_resources, sock_obj):
 # It launches the server itself and everything else
 _main_init = '[root]'
 def server_process(sv_resources, stfu=False):
-	print('Main Process PID:', os.getpid())
+	print('Main Server Process PID:', os.getpid())
 	os.environ['_jag-dev-lvl'] = '1'
 
 	# try overriding dev level
@@ -376,28 +372,60 @@ def server_process(sv_resources, stfu=False):
 
 
 class JagRoute:
-	def __init__(self, path=None, methods=None, cors=None, access_ctrl=None, cache_ctrl=None):
-		self.path = path
-		self.methods = methods
+	def __init__(
+		self,
+		path        :str=None,
+		methods     :list[str]=None,
+		cors        :jag_http_ents.CORSAllowance=None,
+		access_ctrl :jag_http_ents.AccessControl=None,
+		cache_ctrl  :jag_http_ents.HTTPClientCacheControl=None
+	):
+		# quick type check
+		# This is absolutely retarded, but might help preventing
+		# stupid errors
+		typecheck = [
+			(path, str),
+			(methods, list),
+			(cors, jag_http_ents.CORSAllowance),
+			(access_ctrl, jag_http_ents.AccessControl),
+			(cache_ctrl, jag_http_ents.HTTPClientCacheControl),
+		]
+		for prm, ptype in typecheck:
+			if type(prm) not in (ptype, None,):
+				from jag_exceptions import InvalidJagRoute
+				raise InvalidJagRoute(
+					f'Bad JagRoute: {prm} must be one of {(ptype, None,)}, but not {type(prm)}'
+				)
 
-		self.cors = cors() if cors else jag_http_ents.CORSAllowance()
-		self.cache_ctrl = cache_ctrl() if cache_ctrl else jag_http_ents.HTTPClientCacheControl()
-		self.access_ctrl = access_ctrl if access_ctrl else jag_http_ents.AccessControl
+		self.path:str = path
+		self.methods:list = methods
+
+		self.cors:jag_http_ents.CORSAllowance = (
+			cors() if cors else jag_http_ents.CORSAllowance()
+		)
+		self.cache_ctrl:jag_http_ents.HTTPClientCacheControl = (
+			cache_ctrl() if cache_ctrl else jag_http_ents.HTTPClientCacheControl()
+		)
+		self.access_ctrl:jag_http_ents.AccessControl = (
+			access_ctrl if access_ctrl else jag_http_ents.AccessControl
+		)
 
 
 	def __call__(self, func):
+		"""\
+		Mimicking the way Flask works.
+		"""
 		self.func = func
 		return self
 		
 
-
-
 class JagRoutingIndex:
 	"""\
-	The way routing in Jag works is similar to Flask:
-	@JagRoute(path='/sex')
-	def(request, response, services):
-		pass
+	The way routing in Jag works is similar to Flask::
+
+	    @JagRoute(path='/sex')
+	    def(request, response, services):
+	        pass
 
 	Routes can be defined through any python file
 	and must be located in the main body of the script.
@@ -420,6 +448,7 @@ class JagRoutingIndex:
 		module_file_path = room_file
 		module_name = 'jag_custom_action'
 
+		# Execute the custom python file to perform attribute lookup on
 		spec = importlib.util.spec_from_file_location(module_name, str(module_file_path))
 		module = importlib.util.module_from_spec(spec)
 		sys.modules[module_name] = module
@@ -429,7 +458,7 @@ class JagRoutingIndex:
 		self.routes = []
 		self.default_route = None
 
-	def find_routes(self):
+	def index_routes(self):
 		with DynamicGroupedText('Indexing Routes') as grouplog:
 			for attr in dir(self.custom_module):
 				route_obj = getattr(self.custom_module, attr)
@@ -487,25 +516,30 @@ class JagRoutingIndex:
 
 
 
-
+# The very tip of the server
+# Initializes config & resources and passes it
+# to a Process/Thread
 class JagServer(NestedProcessControl):
 	"""\
-	The root of the HTTP server.
+	Controls root and all the child processes related to the server.
+	But NOT the process of the script that created this class.
 	"""
-	def __init__(self, launch_params):
+	def __init__(self, launch_params:dict):
 		self.launch_params = JagHTTPServerResources(launch_params)
-		self.routes = None
-		self.threaded = not self.launch_params.cfg['multiprocessing']['enabled']
+
+		# Best is the enemy of good enough
+		tgt_func = multiprocessing.Process
+		if self.threaded:
+			tgt_func = threading.Thread
+
+		self.target_process = tgt_func(
+			target=server_process,
+			args=(self.launch_params,)
+		)
 
 	def launch(self):
-		if not self.threaded:
-			self.server_process = multiprocessing.Process(target=server_process, args=(self.launch_params,))
-			self.server_process.start()
-			self.running = True
-		else:
-			self.server_process = threading.Thread(target=server_process, args=(self.launch_params,))
-			self.server_process.start()
-			self.running = True
+		self.target_process.start()
+		self.running = True
 
 
 
