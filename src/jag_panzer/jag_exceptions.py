@@ -68,3 +68,16 @@ class InvalidFormData(Exception):
 	pass
 
 
+class StopExecution(Exception):
+	"""\
+	Raised to stop any further client request evaluation
+	"""
+	pass
+
+
+
+
+
+
+
+
