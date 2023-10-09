@@ -16,15 +16,13 @@ def conlog(*args, loglvl=1, exact=False):
 
 
 def dict_pretty_print(d):
-	return
-	fuck = '\n'
-	for key in d:
-		fuck += f"""{('>' + str(key) + '<').ljust(30)} :: >{str(d[key])}<""" + '\n'
-
-	print(fuck)
+	pass
 
 
-def iterable_to_grouped_text(tgt, groupname='', indent=1):
+def iterable_to_grouped_text(tgt, groupname:str='', indent:int=1) -> str:
+	"""\
+	Convert an itrable into a nice frame
+	"""
 	indent = '\t'*indent
 
 	result = '\n'
@@ -44,6 +42,17 @@ def iterable_to_grouped_text(tgt, groupname='', indent=1):
 
 
 class DynamicGroupedText:
+	"""\
+	Separate prints into groups, like so::
+
+	    +--------------------------
+	    |LOL
+	    +--------------------------
+	    | ('Printing text',)
+	    | ('Printing more text',)
+	    | ('Printing another text',)
+	    +--------------------------
+	"""
 	def __init__(self, groupname='', indent=1):
 		self.indent = '\t'*indent
 		self.groupname = groupname
@@ -61,11 +70,17 @@ class DynamicGroupedText:
 		conlog(f'{self.indent}| {args}')
 
 
-def progrssive_hash(buf, hash_function, mb_read:int=100):
+def progrssive_hash(buf, hash_function, mb_read:int=100, as_bytes:bool=False) -> str|bytes:
 	"""\
 	Progrssively calculate hash of a readable buffer.
 	- hash_function must be a function from hashlib, such as
 	md5, sha256, sha512 and so on.
+
+	:param buf: Input readable buffer
+	:param hash_function: hashlib.sha256/hashlib.md5 and so on
+	:param mb_read: Amount of megabytes to read from the buffer per update
+	:param as_bytes: Whether to return the digest as hex string or bytes
+	:return:
 	"""
 	block_size = (1024**2)*mb_read
 	digest = hash_function()
@@ -75,25 +90,53 @@ def progrssive_hash(buf, hash_function, mb_read:int=100):
 			break
 		digest.update(data)
 
-	return digest.hexdigest()
+	if as_bytes:
+		return digest.digest()
+	else:
+		return digest.hexdigest()
 
+def multireplace(src:str|bytes, replace_pairs:list[tuple[str|bytes, str|bytes]]) -> str|bytes:
+	"""
+	Replace multiple entries at once.
 
-def multireplace(src, replace_pairs:list[tuple[str, str]]):
+	:param src: Source string/byte object
+	:param replace_pairs: A list of tuples containing what to replace with what
+	:return: Modified input
+	"""
 	for replace_what, replace_with in replace_pairs:
 		src = src.replace(replace_what, replace_with)
 	return src
 
 
-def clamp(num, tgt_min, tgt_max):
+def clamp(num:int|float, tgt_min:int|float, tgt_max:int|float) -> int|float:
+	"""
+	Clamp a number to a range.
+
+	:param num: The number to clamp
+	:param tgt_min: Clamp floor
+	:param tgt_max: Clamp ceil
+	:return: Either the number itself or the floor/ceil
+	"""
 	return max(tgt_min, min(num, tgt_max))
 
 
-def int_to_chunksize(i):
+def int_to_chunksize(i:int) -> bytes:
+	"""\
+	Convert an integer into HTML chunk size.
+	"""
 	return f"""{hex(i).lstrip('0x')}\r\n""".encode()
 
 
 # get local IP of the machine
 def get_current_ip():
+	"""\
+	Get local IP of the machine this function was called on.
+
+	A piece of code copypasted from a random website,
+	which looks like it was either AI-generated or
+	written by a chinese.
+	Nontheless - it works.
+	"""
 	import socket
 	# what the fuck ?
 	# Why?
@@ -105,8 +148,10 @@ def get_current_ip():
 
 
 class ExcHook:
-	"""
-	For whatever reason, exceptions are not being printed in subprocesses
+	"""\
+	For whatever reason, exceptions are not being printed in subprocesses.
+
+	**THIS DOES NOT WORK, FUCK**
 	"""
 	def __init__(self, send_logs, mute):
 		self.send_logs = send_logs
@@ -137,7 +182,6 @@ class ExcHook:
 			self.echo_log(info)
 		except Exception as e:
 			pass
-		
 
 	# send error log to the logging server, if any
 	def echo_log(self, info):
@@ -152,12 +196,21 @@ class ExcHook:
 
 
 def rebind_exception(send_logs=True, mute=False):
+	"""Redundant"""
 	import sys
 	print('rebound traceback')
 	sys.excepthook = ExcHook(send_logs, mute)
 
 
 def print_exception(err):
+	"""\
+	For whatever reason - threading and multiprocessing
+	don't print exceptions. Which means a print statement
+	should explicitly print the desired text.
+
+	This function takes an error object as an input
+	and prints it as regular traceback.
+	"""
 	import traceback
 	try:
 		print(
@@ -173,9 +226,14 @@ def print_exception(err):
 		print(e)
 
 
-def traceback_to_text(info):
-	import traceback
+def traceback_to_text(info) -> str:
+	"""\
+	Format traceback object into your regular
+	traceback text. Just like the one python prints
+	by default.
+	"""
 
+	import traceback
 	try:
 		if not isinstance(info, tuple):
 			return (
@@ -191,6 +249,13 @@ def traceback_to_text(info):
 			return ''.join(traceback.format_exception(*info))
 	except Exception as e:
 		return str(e) + ' ' + str(info)
+
+
+def multistring(*args) -> str:
+	"""\
+	Return the strings passed, but joined together
+	"""
+	return ''.join([*args])
 
 
 # Todo: should this really be in util ?
@@ -256,13 +321,15 @@ class JagConfigBase:
 
 
 class NestedProcessControl:
-	"""
+	"""\
 	Simple interface for launching and killing a process,
 	which may or may not have non-daemonic children.
 
-	The process in question must be stored in self.target_process.
+	The process in question must be stored in self.target_process
 
 	This class can work with multiprocessing.Process and threading.Thread.
+
+	External dependency: psutil
 	"""
 	running:bool = False
 	threaded:bool = False
@@ -297,7 +364,9 @@ class NestedProcessControl:
 			child_proc.terminate()
 
 	@property
-	def pid(self) -> int:
+	def pid(self) -> int | None:
+		if self.threaded:
+			return None
 		return self.target_process.pid
 
 	@property
@@ -305,7 +374,7 @@ class NestedProcessControl:
 		return self.target_process.is_alive()
 
 	def restart(self):
-		"""
+		"""\
 		Restart the server.
 
 		1 - Kill if possible
@@ -350,6 +419,63 @@ class NestedProcessControl:
 		self._target_process = proc
 
 
+# important todo: Do NOT encode string stoppers to bytes
+# and do NOT encode feed data to bytes when stopper is a string
+# todo: The class is literally called ByteSequenceStopper,
+# STOP ACCEPTING STRINGS
+class ByteSequenceStopper:
+	"""\
+	Progressively detect a byte sequence from a byte stream.
+	Keep feeding bytes to this class till it returns True.
+	"""
+	def __init__(self, target_sequence:bytes|str|bytearray):
+		if not type(target_sequence) in (bytes, str, bytearray):
+			raise TypeError(
+				'Invalid sequence: the target sequence can only be one of (bytes, str, bytearray)'
+				+
+				f'and not {type(target_sequence)}'
+			)
+
+		if isinstance(target_sequence, str):
+			target_sequence = target_sequence.encode()
+
+		self.tgt_sequence:bytearray = bytearray(target_sequence)
+		self.finished = False
+		self.result = False
+
+		# Index of the expected character
+		self.expect = 0
+
+		self.match_len = len(self.tgt_sequence) - 1
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, exc_type, exc_val, exc_tb):
+		self.finished = True
+
+	def close(self):
+		self.finished = True
+
+	def feed(self, data:bytes|str|bytearray) -> tuple[bool, bytes]:
+		if self.finished:
+			return self.result
+
+		if isinstance(data, str):
+			data = data.encode()
+
+		for idx, char in enumerate(data):
+			if self.expect == self.match_len:
+				self.finished = True
+				self.result = True
+				return True, bytes(data[(idx+1):])
+
+			if char == self.tgt_sequence[self.expect]:
+				self.expect += 1
+			else:
+				self.expect = 0
+
+		return False, b''
 
 
 
