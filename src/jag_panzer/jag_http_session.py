@@ -1,7 +1,6 @@
 from pathlib import Path
 import sys, socket, io, json
 
-import requests
 
 if not str(Path(__file__).parent) in sys.path:
 	sys.path.append(str(Path(__file__).parent))
@@ -653,7 +652,7 @@ class ServerResponse:
 
 
 class HeaderFields:
-	"""
+	"""\
 	Collect header fields from a client connection.
 	First initialize the class and then call collect() function
 	    - cl_con - client connection.
@@ -661,7 +660,7 @@ class HeaderFields:
 	It's impossible to "stream" the header fields, because it's stupid.
 	If the field exceeds the max size - the client can basically fuck off.
 	"""
-	def __init__(self, cl_con:socket.socket, maxsize:int=65535):
+	def __init__(self, cl_con:socket.socket, maxsize:int=65535, prefix_data:bytes=b''):
 		self.cl_con:socket.socket = cl_con
 		self.maxsize:int =          maxsize
 		self.lines:list  =          []
@@ -673,7 +672,9 @@ class HeaderFields:
 		# this class has read from the socket.
 		self.data_read_size:int = 0
 
-	def collect(self):
+		self.prefix_data:bytes = prefix_data or b''
+
+	def collect(self, skt_file=None):
 		"""
 		Collect the header fields as lines into self.lines
 		"""
@@ -681,7 +682,9 @@ class HeaderFields:
 
 		# Mega important shit: not setting buffering to 0 would result into
 		# extra data being buffered even AFTER the fields end
-		rfile = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
+		rfile = skt_file
+		if not rfile:
+			rfile = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
 		conlog('created virtual file')
 		with DynamicGroupedText('Read Header Fields Stream') as log_group:
 			while True:
@@ -691,7 +694,7 @@ class HeaderFields:
 					# return False
 					# todo: this should log a warning or maybe even error
 					break
-				line = rfile.readline(maxsize)
+				line = (self.prefix_data or b'') + rfile.readline(maxsize)
 				log_group.print('read line', line)
 
 				# it's important to also count \r\n\t etc.
@@ -708,7 +711,8 @@ class HeaderFields:
 				# todo: is this strip() really ok ?
 				self.lines.append(line.decode().strip())
 
-			rfile.close()
+			if not skt_file:
+				rfile.close()
 
 
 # ==================================
@@ -733,7 +737,7 @@ class BodyByteStreamReader:
 	def read(self, amount:int=4096):
 		# todo: is it ok to read 0 bytes from the socket file ?
 
-		allowance = amount
+		allowance:int = amount
 		if self.total_length:
 			if self.total_length >= self.progress:
 				return b''
@@ -742,122 +746,6 @@ class BodyByteStreamReader:
 		chunk = self.socket_file.read(allowance)
 		self.progress += allowance
 		return chunk
-
-
-class MultipartFormField:
-	def __init__(self, request:'ClientRequest', response:ServerResponse):
-		self.request = request
-		self.response = response
-		self.cl_con = request.cl_con
-
-
-
-
-
-class MultipartFormReader:
-	"""\
-	Read a request encoded with multipart/form-data
-	"""
-	def __init__(self, request:'ClientRequest', response:ServerResponse):
-		self.request = request
-		self.response = response
-		self.cl_con = request.cl_con
-
-		self.boundary:str = jag_http_ents.HTTPHeaderKV(
-			self.request.headers['content-type']
-		)['boundary']
-
-		if not self.boundary:
-			raise InvalidFormData(
-				'Invalid Multipart Form data: No boundary present'
-			)
-
-		self.boundary = self.boundary.encode()
-
-
-	def __enter__(self):
-		return self
-
-	def __exit__(self, exc_type, exc_val, exc_tb):
-		pass
-
-	def next_field(self) -> MultipartFormField:
-		"""\
-		Traverse to the next field,
-		skipping the previous one if it wasn't read.
-		"""
-
-
-
-
-class URLEFormField:
-	"""\
-	URL-encoded form field.
-	Works the same as multipart form field for
-	consistency.
-	"""
-
-	# field name
-	name:str = None
-	# field type: file/text/...
-	type:str = None
-	# The name of the file, if any
-	filename:str = None
-	# Content-Disposition: form-data
-	disposition:str = None
-
-	def __init__(self, request:'ClientRequest', fname:str):
-		self.request = request
-		self.cl_con = request.cl_con
-
-		self.name = fname
-
-	def read_value(self):
-		# important todo: this is TOO slow
-		self.name = 'ded'
-
-
-class URLEFormReader:
-	"""\
-	Content-Type: application/x-www-form-urlencoded
-	field1=value1&field2=value2
-
-	    This is pretty much useless, because there'd never be so much data
-	for there to be a need to read it as a stream...
-
-	    This behaviour is only needed for consistency with
-	multipart/form-data;boundary="boundary" type of messages.
-	"""
-
-	# This is only needed to prevent malicious requests
-	kname_maxsize:int = 65535
-	kval_maxsize:int = 65535
-	# field1=value1&field2=value2
-	def __init__(
-		self,
-		request:'ClientRequest',
-		response:ServerResponse,
-	):
-		self.request = request
-		self.response = response
-		self.cl_con = request.cl_con
-
-		self.overflow = io.BytesIO()
-
-	def __enter__(self):
-		return self
-
-	def __exit__(self, exc_type, exc_val, exc_tb):
-		pass
-
-	def next_field(self) -> URLEFormField:
-		"""\
-		Traverses to the next field,
-		skipping the previous one if it wasn't read.
-		"""
-
-
-
 
 
 class ProgressiveBodyReader:
@@ -884,7 +772,6 @@ class ProgressiveBodyReader:
 
 		return BodyByteStreamReader(self.request, self.response, content_length)
 
-
 	def read_form(self, autoreject:bool=True, kname_maxsize:int=None, kval_maxsize:int=None):
 		"""\
 		Read form data as stream.
@@ -892,7 +779,11 @@ class ProgressiveBodyReader:
 
 		Both behave the same.
 		"""
-		pass
+		raise NotImplemented(
+			multistring(
+				'Coming soon (totally not Valve time). Come on people,'
+			)
+		)
 
 
 class InstantBodyReader:
@@ -906,9 +797,10 @@ class InstantBodyReader:
 		self.progressive_reader = ProgressiveBodyReader(request, response)
 
 
-class ClientRequestBodyReader:
+class ClientRequestBodyInfo:
 	"""\
-	A collection of ways ro read the request body.
+	A collection of ways ro read the request body,
+	as well as some generic info about the body.
 	Supported reading formats:
 	    - Simple onepiece requests, like POST requests with regular jsons and Content-Length header
 	    - Streams without Content-Length header
@@ -917,6 +809,10 @@ class ClientRequestBodyReader:
 	def __init__(self, request:'ClientRequest', response:ServerResponse):
 		self.progressive_reader:ProgressiveBodyReader = ProgressiveBodyReader(request, response)
 		self.instant_reader:InstantBodyReader =         InstantBodyReader(request, response)
+
+		self.length:int =           int(request.headers['content-length'] or 0)
+		self.type:str|None =        request.headers['content-type']
+		self.disposition:str|None = request.headers['content-disposition']
 
 
 # important todo: easy OPTIONS negotiation controls
@@ -953,7 +849,7 @@ class ClientRequest:
 			# raise e
 
 		# now that the request is evaluated - create a body reader class
-		self.body_reader:ClientRequestBodyReader = ClientRequestBodyReader(self, self.response)
+		self.body_reader:ClientRequestBodyInfo = ClientRequestBodyInfo(self, self.response)
 		
 
 	# Init
@@ -1132,6 +1028,7 @@ class ClientRequest:
 		except json.JSONDecodeError as e:
 			if autoreject:
 				self.reject(422, 'Bad JSON')
+				raise StopExecution(f'Bad JSON, {e}')
 			else:
 				raise e
 
@@ -1301,6 +1198,8 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 		conlog('Connection was aborted by the client')
 	except ConnectionResetError as err:
 		conlog('Connection was reset by the client')
+	except StopExecution as err:
+		conlog(f'Stopping execution, because {err}')
 	except Exception as err:
 		import traceback, sys
 
