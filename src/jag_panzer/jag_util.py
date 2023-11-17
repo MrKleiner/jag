@@ -70,20 +70,21 @@ class DynamicGroupedText:
 		conlog(f'{self.indent}| {args}')
 
 
-def progrssive_hash(buf, hash_function, mb_read:int=100, as_bytes:bool=False) -> str|bytes:
+def progrssive_hash(buf, hash_function, mb_read:int=100, as_bytes:bool=False, insecure=False) -> str|bytes:
 	"""\
 	Progrssively calculate hash of a readable buffer.
 	- hash_function must be a function from hashlib, such as
-	md5, sha256, sha512 and so on.
+	sha1, sha256, sha512 and so on.
 
 	:param buf: Input readable buffer
 	:param hash_function: hashlib.sha256/hashlib.md5 and so on
 	:param mb_read: Amount of megabytes to read from the buffer per update
 	:param as_bytes: Whether to return the digest as hex string or bytes
+	:param insecure: alias for usedforsecurity
 	:return:
 	"""
 	block_size = (1024**2)*mb_read
-	digest = hash_function()
+	digest = hash_function(usedforsecurity=not insecure)
 	while True:
 		data = buf.read(block_size)
 		if not data:
@@ -255,7 +256,7 @@ def multistring(*args) -> str:
 	"""\
 	Return the strings passed, but joined together
 	"""
-	return ''.join([*args])
+	return ' '.join([*args])
 
 
 # Todo: should this really be in util ?

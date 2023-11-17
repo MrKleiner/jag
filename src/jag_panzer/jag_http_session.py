@@ -80,7 +80,21 @@ def _default_room(request, response, services):
 
 # utility class returned by server_timings.record
 class PerfRec:
-	def __init__(self, sv_timings, msg:str='perftest', _internal:bool=False, noreport:bool=False):
+	"""\
+	Wrapper around ServerTimings class.
+	Measures elapsed time of code execution within its context::
+	    with server_timings.record('db_lookup'):
+	        result = db.search('query')
+	        do_some_computation(result)
+	    ...
+	"""
+	def __init__(
+		self,
+		sv_timings:'ServerTimings',
+		msg:str='perftest',
+		_internal:bool=False,
+		noreport:bool=False
+	):
 		"""
 		- msg:str='perftest'   -> The name of the timing record
 		- ms:bool=True         -> Use milliseconds instead of seconds to record timing
@@ -117,14 +131,15 @@ class PerfRec:
 
 
 class ServerTimings:
-	"""
+	"""\
 	Various tools for measuring server performance.
-	
+	With Web Timing API.
+
 	Timings are recorded at all times, but Server-Timing API
 	has to be explicitly enabled.
 
-	Ideally, the server should respond within ~100ms,
-	so try to measure performance in groups and not individual function calls.
+	Please don't measure every single function on execution.
+	Group the stuff.
 	"""
 	def __init__(self):
 		# time module
@@ -385,6 +400,35 @@ class AlignedBufReader:
 		return chunk
 
 
+# todo: this is a very retarded approach
+class CacheControl(jag_http_ents.HTTPCachedResource):
+	"""
+	Stuff related to response caching on the client.
+	"""
+	def __init__(
+		self,
+		request_headers:jag_http_ents.HTTPHeaders,
+		response_headers:jag_http_ents.HTTPHeaders,
+		cl_caching:jag_http_ents.HTTPClientCacheControl,
+	):
+		# yes, technically, this stuff will get overwritten
+		# but it's not the problem, because it's literally
+		# the same data
+		self.request_headers = request_headers
+		self.response_headers = response_headers
+		self.cl_caching = cl_caching
+
+	def enable(self):
+		"""
+		Enable cache control in response headers
+		"""
+		# todo: this is a very retarded approach
+		super(CacheControl, self).__init__(self.request_headers, self.response_headers, self.cl_caching)
+
+
+
+
+
 class ServerResponse:
 	def __init__(self, request:'ClientRequest', cl_con:socket.socket, srv_res):
 		self.request:'ClientRequest' = request
@@ -401,6 +445,10 @@ class ServerResponse:
 
 		self.offered_services:ServerServices = ServerServices(self.request, self)
 
+		# todo: make this a function and make it set everything up automatically
+		# after the first call
+		self.caching:CacheControl|None = None
+
 	# Dump headers and response code to the client
 	def send_preflight(self):
 		"""
@@ -413,7 +461,8 @@ class ServerResponse:
 		)
 
 		# important todo: better way of achieving this
-		self.headers['Content-Type'] = self.content_type
+		if self.content_type:
+			self.headers['Content-Type'] = self.content_type
 
 		if self.timings.enable_header:
 			self.headers['Server-Timing'] = self.timings.as_header()
@@ -431,7 +480,14 @@ class ServerResponse:
 		self.send_preflight = lambda: None
 
 	def send_headers_only(self):
+		"""\
+		Only send the current headers to the client.
+		Useful for responses to OPTIONS requests.
+		send_preflight() does a bunch of other stuff,
+		which is not needed when sending 204 responses.
+		"""
 		self.code = 204
+		self.content_type = None
 		self.send_preflight()
 		self.request.terminate()
 
@@ -481,7 +537,6 @@ class ServerResponse:
 		# terminate
 		self.request.terminate()
 
-
 	def flush_json(
 		self,
 		jdata:tuple|list|dict|set,
@@ -510,7 +565,9 @@ class ServerResponse:
 			elif isinstance(obj, bytes) and bytes_to_array:
 				return list(obj)
 			else:
-				raise TypeError(f"""Object of type {obj.__class__.__name__} is not serializable""")
+				raise TypeError(
+					f"""flush_json: Could not serialize json: Object of type {obj.__class__.__name__} is not serializable"""
+				)
 
 		if set_header:
 			self.content_type = 'application/json'
@@ -525,7 +582,7 @@ class ServerResponse:
 			)
 
 
-	def stream_chunks(self, self_terminate=True):
+	def stream_chunks(self, self_terminate:bool=True):
 		"""
 		Stream byte data to the client in HTTP chunks:
 
@@ -659,6 +716,8 @@ class HeaderFields:
 	    - maxsize - max size of the header fields in bytes
 	It's impossible to "stream" the header fields, because it's stupid.
 	If the field exceeds the max size - the client can basically fuck off.
+
+	The maxsize parameter determines both single field max length and the entire buffer
 	"""
 	def __init__(self, cl_con:socket.socket, maxsize:int=65535, prefix_data:bytes=b''):
 		self.cl_con:socket.socket = cl_con
@@ -697,6 +756,12 @@ class HeaderFields:
 				line = (self.prefix_data or b'') + rfile.readline(maxsize)
 				log_group.print('read line', line)
 
+				# account for cancelled connections
+				if not line:
+					raise StopExecution(
+						'Encountered null line while reading header fields'
+					)
+
 				# it's important to also count \r\n\t etc.
 				maxsize -= len(line)
 				self.data_read_size += len(line)
@@ -720,7 +785,7 @@ class HeaderFields:
 # ==================================
 
 class BodyByteStreamReader:
-	"""Low-level progressive body byte reader"""
+	"""Low-level progressive body bytes reader"""
 	def __init__(self, request:'ClientRequest', response:ServerResponse, total_length:int=0):
 		self.request:'ClientRequest' = request
 		self.response:ServerResponse = response
@@ -781,7 +846,9 @@ class ProgressiveBodyReader:
 		"""
 		raise NotImplemented(
 			multistring(
-				'Coming soon (totally not Valve time). Come on people,'
+				'Coming soon (totally not Valve time).',
+				'Come on people, who uses HTML forms in 2023?',
+				'GROW UP'
 			)
 		)
 
@@ -798,13 +865,17 @@ class InstantBodyReader:
 
 
 class ClientRequestBodyInfo:
-	"""\
+	"""
 	A collection of ways ro read the request body,
 	as well as some generic info about the body.
 	Supported reading formats:
 	    - Simple onepiece requests, like POST requests with regular jsons and Content-Length header
 	    - Streams without Content-Length header
-	    - Multipart requests
+
+	Attributes:
+	    - length:int - Evaluated Content-Length header. 0 if not present
+	    - type:str|None - Evaluated Content-Type header. None if not present
+	    - disposition:str|None - Evaluated Content-Disposition. None if not present
 	"""
 	def __init__(self, request:'ClientRequest', response:ServerResponse):
 		self.progressive_reader:ProgressiveBodyReader = ProgressiveBodyReader(request, response)
@@ -1049,7 +1120,7 @@ class ClientRequest:
 		if self._byterange:
 			return self._byterange
 
-		range_data = self.headers.get('range')
+		range_data = self.headers['range']
 		if not range_data:
 			return None
 
@@ -1105,6 +1176,7 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 		timing_api = ServerTimings()
 
 		# the amount of time it took to initialize this worker
+		# todo: this is probably obsolete
 		timing_api.push_record(
 			('devtime', (time.time() - srv_res.devtime)*1000),
 			_internal=True
@@ -1138,11 +1210,28 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 		# ----------------
 		route_info = route_index.match_route('/' + evaluated_request.relpath.as_posix(), evaluated_request.method)
 
+		# todo: this is very weird
+		# There's further resource initialization even after
+		# .reject() and .send_headers_only()
+
+		# todo: this string comparison is the most retarded thing ever
 		if route_info == 'invalid_method':
 			conlog('Room: invalid method:', evaluated_request.method)
 			evaluated_request.reject(405)
+		else:
+			# todo: this else shouldn't be here.
+			# caching (and other entities) should be initialized in a more civilized manner
+			response.cache = CacheControl(
+				evaluated_request.headers,
+				response.headers,
+				route_info.cache_ctrl
+			)
+
+			if route_info.cache_ctrl.enable_by_default:
+				response.cache.enable()
 
 		# Treat options
+		# todo: this is incomplete
 		if evaluated_request.method == 'options':
 			access_ctrl = route_info.access_ctrl(evaluated_request.headers, response.headers)
 			access_ctrl.apply_headers()
@@ -1162,13 +1251,17 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 
 		# Now either pass the control to the room specified in the config
 		# or the default room
+
+		# todo: this .terminated attribute is a very retarded approach
+		# There's a StopExecution exception now
+		# Another exception can also be added
+		# to differentiate better
 		if not evaluated_request.terminated:
 			route_info.func(
 				evaluated_request,
 				evaluated_request.response,
 				server_index
 			)
-
 
 
 		# ----------------
@@ -1194,32 +1287,50 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 			lrec.push()
 
 
+	# todo: there was a mention of some kind of exception groups
+	# in the latest python versions...
 	except ConnectionAbortedError as err:
 		conlog('Connection was aborted by the client')
 	except ConnectionResetError as err:
 		conlog('Connection was reset by the client')
 	except StopExecution as err:
+		# Similar trick to StopIteration
 		conlog(f'Stopping execution, because {err}')
 	except Exception as err:
-		import traceback, sys
+		# Pro gamer move:
+		# putting "except Exception" after a stack of more specific
+		# exceptions would execute both specific exception case
+		# and broad generic Exception case
 
-		conlog(
-			''.join(
-				traceback.format_exception(
-					type(err),
-					err,
-					err.__traceback__
+		# Here, any exception should be treated as an error
+		# to avoid exploits and serious data corruption.
+
+
+		# Differentiate between genuine errors
+		# and simple aborts
+
+		# todo: this indent is very stupid
+		# Separate this procedure into a function or something
+		# (originally it was made like that to minimize risk)
+		import traceback, sys
+		if not type(err) in (StopExecution,):
+			conlog(
+				''.join(
+					traceback.format_exception(
+						type(err),
+						err,
+						err.__traceback__
+					)
 				)
 			)
-		)
 
-		try:
-			if srv_res.cfg['errors']['echo_to_client']:
-				echo_exception_to_client(err, cl_con)
-			err_rec = LogRecord(2, traceback_to_text(err))
-			err_rec.push()
-		except Exception as e:
-			pass
+			try:
+				if srv_res.cfg['errors']['echo_to_client']:
+					echo_exception_to_client(err, cl_con)
+				err_rec = LogRecord(2, traceback_to_text(err))
+				err_rec.push()
+			except Exception as e:
+				pass
 
 		sys.exit()
 
@@ -1229,5 +1340,7 @@ def htsession(cl_con, cl_addr, srv_res, route_index=None):
 	# _rebind('Exiting...')
 	# cl_con.shutdown(2)
 	cl_con.close()
+
+	# todo: isn't this sys.exit() a bit too hash?
 	sys.exit()
 
