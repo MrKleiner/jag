@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Jag Debug Log</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+	<body wss_url="@@wss_url">
+		<h2>
+			Jag Print Service
+			<button onclick="disconnect_wss()">Disconnect</button>
+		</h2>
+		<main></main>
+	</body>
+
+	<!-- A print column template -->
+	<template id="worker_template">
+		<div class="print_column">
+			<header class="worker_info_header"></header>
+			<label>
+				<input checked type="checkbox">
+				Lock
+			</label>
+			<div dark_scrollbar class="worker_groups"></div>
+			<div dark_scrollbar class="worker_connections"></div>
+		</div>
+	</template>
+
+	<!-- A print group template -->
+	<template id="print_group_template">
+		<div class="col_print_group">
+			<header class="print_group_header"></header>
+			<div dark_scrollbar class="print_group_data"></div>
+		</div>
+	</template>
+
+	<!-- A single row of text, eq of python print() -->
+	<template id="print_row">
+		<pre class="print_row"></pre>
+	</template>
+
+	<script type="application/javascript" src="/script.js"></script>
+</html>
+
+
