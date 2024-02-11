@@ -1,19 +1,33 @@
 """
-Service responsible for printing log n stuff.
+Service responsible for printing to the "console" n stuff.
 
 Only setup stuff or critical errors should be printed to the console.
 Everything else goes to the web print.
 
+The reason this exists, is because there's no way to properly group
+prints into a single console window, especially with multiprocessing
+or even threading.
 
+This allows prints to exist as a web service
+you can even connect to remotely.
+
+The html/css/js combo allows endless
+grouping/separation possibilities.
+
+This module should have nothing to do with writing file logs.
+This should simply function in a similar manner of attaching
+to a (linux) screen session via SSH at arbitrary times.
 """
-import secrets
+
 from pathlib import Path
+import secrets
 import socket
 import json
 import queue
 import threading
 from ..jag_internal.min_http import MinHTTP
 from ..jag_internal.min_wss import MinWSession
+from .. import jag_util
 
 THISDIR = Path(__file__).parent
 
@@ -37,7 +51,8 @@ def print_exception(err):
 	except Exception as e:
 		print('Could not format exception:', e)
 
-
+# fuck python
+# fuck it very much. Retard
 def wrap_exception(func):
 	def _inner(*args, **kwargs):
 		try:
@@ -75,6 +90,8 @@ class MinHTTPRequestProcessor:
 			WEBCL_ROOT_DIR / 'style.css',
 			'text/css',
 		),
+
+		# A rather mid font. Lmao
 		(
 			'ibm_plex_bold.ttf',
 			WEBCL_ROOT_DIR / 'ibm_plex_bold.ttf',
@@ -90,6 +107,7 @@ class MinHTTPRequestProcessor:
 	def process_request(self, cl_request):
 		for cdn_query, fpath, mime in self.CDN_RESOURCE_INDEX:
 			if cdn_query in cl_request.path:
+				# todo: is_file() check is rather useless here
 				if fpath.is_file():
 					cl_request.flush_bytes(
 						fpath.read_bytes(),
@@ -106,7 +124,6 @@ class MinHTTPRequestProcessor:
 		)
 
 
-
 class PrintPipeProtocol:
 	"""
 	The protocol used for the communication
@@ -118,15 +135,24 @@ class PrintPipeProtocol:
 		'close_group',
 	)
 
-	@staticmethod
+	color_dict = {
+		'red':    'FF0000',
+		'lime':   '00FF00',
+		'green':  '008000',
+		'orange': 'FFA500',
+		'cyan':   '00FFFF',
+	}
+
+	@classmethod
 	def send_payload(
+		cls,
 		skt_con:socket.socket,
 		payload_data:dict
 	):
 		# Send cmd index
 		skt_con.sendall(
 			int.to_bytes(
-				PrintPipeProtocol.cmd_registry.index(payload_data['cmd']),
+				cls.cmd_registry.index(payload_data['cmd']),
 				1,
 				'little'
 			)
@@ -142,6 +168,12 @@ class PrintPipeProtocol:
 			payload_data.get('special_id', '').ljust(32, '0').encode()
 		)
 
+		# Send colour
+		colour = payload_data.get('color', '000000') or '000000'
+		skt_con.sendall(
+			bytes.fromhex(cls.color_dict.get(colour, colour)[0:6])
+		)
+
 		# Send payload length
 		msg = f"""{payload_data['data']}""".encode()
 		skt_con.sendall(
@@ -154,15 +186,15 @@ class PrintPipeProtocol:
 		)
 
 
-	@staticmethod
-	def read_payload(skt_file:socket.socket.makefile):
+	@classmethod
+	def read_payload(cls, skt_file:socket.socket.makefile):
 		cmd_idx = int.from_bytes(
 			skt_file.read(1),
 			byteorder='little',
 			signed=False
 		)
 
-		cmd = PrintPipeProtocol.cmd_registry[cmd_idx]
+		cmd = cls.cmd_registry[cmd_idx]
 
 		col_idx = int.from_bytes(
 			skt_file.read(2),
@@ -171,6 +203,12 @@ class PrintPipeProtocol:
 		)
 
 		cell_id = skt_file.read(32).decode()
+
+		colour = skt_file.read(3)
+		if colour == b'\0\0\0':
+			colour = None
+		else:
+			colour = colour.hex()
 
 		payload_size = int.from_bytes(
 			skt_file.read(8),
@@ -184,8 +222,47 @@ class PrintPipeProtocol:
 			'cmd':     cmd,
 			'col_idx': col_idx,
 			'cell_id': cell_id,
+			'color':   colour,
 			'data':    payload_data
 		}
+
+
+class DynamicGroupedText:
+	"""
+	Separate prints into groups, like so::
+
+	    +--------------------------
+	    |LOL
+	    +--------------------------
+	    | ('Printing text',)
+	    | ('Printing more text',)
+	    | ('Printing another text',)
+	    +--------------------------
+	"""
+
+	def __init__(
+		self,
+		groupname:str='',
+		indent:int=1,
+		printfunc=None
+	):
+		self.indent = '\t' * indent
+		self.groupname = groupname
+		self.printfunc = printfunc or print
+
+	def __enter__(self):
+		self.printfunc(f'\n{self.indent}+--------------------------')
+		self.printfunc(f'{self.indent}|{self.groupname}')
+		self.printfunc(f'{self.indent}+--------------------------')
+		return self
+
+	def __exit__(self, exc_type, exc_value, exc_traceback):
+		self.printfunc(f'{self.indent}+--------------------------\n')
+
+	def dgt_print(self, *args):
+		target_text = ' '.join([f'{i}' for i in args])
+
+		self.printfunc(f'{self.indent}| {target_text}')
 
 
 
@@ -227,23 +304,65 @@ class JagPrintClient:
 			except Exception as e:
 				continue
 
-	def print_group(self):
-		return PrintGroup(self)
 
-	def print(self, *msg, special_id=''):
+	def print_iterable(
+		self,
+		msg:list|tuple|dict|set,
+		groupname:str='',
+		color:str=None,
+		indent:int=1
+	):
+		"""
+		Print iterable into a nice vertical frame.
+		"""
+		self.print(
+			jag_util.iterable_to_grouped_text(msg, groupname, indent),
+			color=color
+		)
+
+	def print_section(self) -> 'PrintSection':
+		"""
+		Print stuff to a new window within a column.
+		"""
+		return PrintSection(self)
+
+	def print(self, *msg, color:str=None, special_id=''):
+		"""
+		Print stuff to the base of the column.
+		Works just like regular print().
+		"""
 		PrintPipeProtocol.send_payload(
 			self.sv_con,
 			{
-				'cmd':        'print',
-				'col_id':     self.cl_id,
-				'special_id': special_id,
-				'data':       ' '.join([f'{i}' for i in msg]),
+				'cmd':          'print',
+				'col_id':       self.cl_id,
+				'special_id':   special_id,
+				'worker_hader': self.worker_header,
+				'color':        color,
+				'data':         ' '.join([f'{i}' for i in msg]),
 			}
+		)
+
+	def dynamic_textgroup(
+		self,
+		groupname:str='',
+		indent:int=1
+	) -> DynamicGroupedText:
+		"""
+		Print text in a group within a column
+		:param groupname: The name displayed in the header of the group
+		:param indent: The amount to indent the group by
+		:return: The control class
+		"""
+		return DynamicGroupedText(
+			groupname,
+			indent,
+			printfunc=self.print
 		)
 
 
 
-class PrintGroup:
+class PrintSection:
 	def __init__(self, print_client:JagPrintClient):
 		self.print_client:JagPrintClient = print_client
 		self.special_id:str = secrets.token_hex(16)
@@ -260,7 +379,7 @@ class PrintGroup:
 				'data':       'Pootis',
 			}
 		)
-		return self.group_print
+		return self
 
 	def __exit__(self, exc_type, exc_val, exc_tb):
 		PrintPipeProtocol.send_payload(
@@ -275,9 +394,41 @@ class PrintGroup:
 			}
 		)
 
-	def group_print(self, *msg):
-		self.print_client.print(*msg, special_id=self.special_id)
 
+	def print_iterable(
+		self,
+		msg:list|tuple|dict|set,
+		groupname:str='',
+		color:str=None,
+		indent:int=1
+	):
+		"""
+		Print iterable into a nice vertical frame.
+		"""
+		self.sec_print(
+			jag_util.iterable_to_grouped_text(msg, groupname, indent),
+			color=color
+		)
+
+	def sec_print(self, *msg, color:str=None):
+		self.print_client.print(*msg, color=color, special_id=self.special_id)
+
+	def dynamic_textgroup(
+		self,
+		groupname:str='',
+		indent:int=1
+	) -> DynamicGroupedText:
+		"""
+		Print text in a group within a section
+		:param groupname: The name displayed in the header of the group
+		:param indent: The amount to indent the group by
+		:return: The control class
+		"""
+		return DynamicGroupedText(
+			groupname,
+			indent,
+			printfunc=self.sec_print
+		)
 
 
 class WebclWSS:
@@ -365,9 +516,6 @@ class WebclWSS:
 							continue
 
 
-
-
-
 class JagPrintServiceWebClient:
 	def __init__(self, print_service:'JagPrintService'):
 		# todo: is this retarded in terms of
@@ -452,6 +600,7 @@ class JagPrintService:
 					'col_idx':    msg_data['col_idx'],
 					'special_id': msg_data['cell_id'],
 					'self_name':  None,
+					'color':      msg_data['color'],
 					'data':       msg_data['data'].decode(),
 				}
 			}

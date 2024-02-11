@@ -32,9 +32,29 @@ const body_dom = document.querySelector('body');
 
 const empty_special_id = '0'.repeat(32);
 
-const max_groups_per_col = 16;
+const max_groups_per_col = 32;
+
+const fullscreen_dom = document.querySelector('#fullscreen_echo');
+const fullscreen_dom_edata = document.querySelector('#fullscreen_echo_data');
 
 
+let fullscreen_active = false;
+let fullscreen_src_parent = null;
+let fullscreen_current = null;
+
+document.addEventListener('keydown', evt => {
+	if (fullscreen_active && evt.key == 'Escape'){
+		if (body_dom.contains(fullscreen_current)){
+			fullscreen_src_parent.append(fullscreen_current);
+		}
+		
+		fullscreen_dom.classList.add('vis_hidden');
+
+		fullscreen_active = false;
+		fullscreen_src_parent = null;
+		fullscreen_current = null;
+	}
+});
 
 
 // ===================================
@@ -62,9 +82,21 @@ class PrintGroup {
 		this.parent_column.dom_data.groups.append(
 			this.dom_data.root
 		)
+
+		const self = this;
+		this.dom_data.root.oncontextmenu = function(evt){
+			evt.preventDefault();
+
+			fullscreen_src_parent = self.dom_data.root;
+			fullscreen_current = self.dom_data.dump;
+
+			fullscreen_dom_edata.append(fullscreen_current);
+			fullscreen_dom.classList.remove('vis_hidden');
+			fullscreen_active = true;
+		}
 	}
 
-	gprint(text){
+	gprint(text, color=null){
 		// todo: duplicated code
 
 		const row_dom = tplate_index(
@@ -76,6 +108,10 @@ class PrintGroup {
 
 		if (this.dom_data.dump.children.length > this.maxlines){
 			this.dom_data.dump.firstChild.remove();
+		}
+
+		if (color){
+			row_dom.row.style.color = `#${color}`;
 		}
 
 		row_dom.row.innerText = text;
@@ -122,9 +158,22 @@ class PrintColumn {
 		this.dom_data.s_lock.onchange = function(){
 			self.s_lock = self.dom_data.s_lock.checked;
 		}
+
+		this.dom_data.root.oncontextmenu = function(evt){
+			evt.preventDefault();
+
+			if (evt.target.closest('.col_print_group') || evt.target.closest('.print_group_data')){return};
+			console.log('What the fuck?', evt.target.closest('.col_print_group'), evt.target)
+			fullscreen_src_parent = self.dom_data.root;
+			fullscreen_current = self.dom_data.dump;
+
+			fullscreen_dom_edata.append(fullscreen_current);
+			fullscreen_dom.classList.remove('vis_hidden');
+			fullscreen_active = true;
+		}
 	}
 
-	update(text){
+	update(text, color=null){
 		const row_dom = tplate_index(
 			'#print_row',
 			{
@@ -134,6 +183,10 @@ class PrintColumn {
 
 		if (this.dom_data.dump.children.length > this.maxlines){
 			this.dom_data.dump.firstChild.remove();
+		}
+
+		if (color){
+			row_dom.row.style.color = `#${color}`;
 		}
 
 		row_dom.row.innerText = text;
@@ -176,17 +229,17 @@ const process_init_info = function(sv_msg){
 // Initializing print groups
 const create_print_group = function(sv_msg){
 	const special_id = sv_msg.val.special_id;
-	console.log(
-		'Creating a group with the special id of',
-		special_id
-	)
+	// console.log(
+	// 	'Creating a group with the special id of',
+	// 	special_id
+	// )
 
 	if (print_groups[special_id]){
-		console.log(
-			'Did not create a print group, because',
-			special_id,
-			'already exists'
-		)
+		// console.log(
+		// 	'Did not create a print group, because',
+		// 	special_id,
+		// 	'already exists'
+		// )
 		return
 	}
 
@@ -215,20 +268,27 @@ const delete_print_group = function(sv_msg){
 // Actually printing text
 const print_text = function(sv_msg){
 	const special_id = sv_msg.val.special_id;
+	const color = sv_msg?.val?.color;
 
 	if (special_id && special_id != empty_special_id){
 		create_print_group(sv_msg)
-		print_groups[special_id].gprint(sv_msg.val.data)
+		print_groups[special_id].gprint(sv_msg.val.data, color)
 		return
 	}
 
-	print_columns[sv_msg.val.col_idx].update(sv_msg.val.data)
+	print_columns[sv_msg.val.col_idx].update(sv_msg.val.data, color)
 }
 
 
 const disconnect_wss = function(){
 	wss_con.close();
 }
+
+
+const update_print_limits = function(){
+
+}
+
 
 
 
@@ -257,7 +317,8 @@ wss_con.addEventListener('open', (event) => {
 
 wss_con.addEventListener('message', async function(event){
 	const msg = JSON.parse(await event.data.text());
-	console.log('recv msg:', msg);
+	// console.log('recv msg:', msg);
+	// console.log('Colour:', msg?.val?.color);
 
 	wss_cmd_index[msg.cmd](msg);
 });

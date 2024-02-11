@@ -27,6 +27,10 @@ html{
 	background: #0c0c0c;
 }
 
+.vis_hidden{
+	display: none !important;
+}
+
 
 
 [dark_scrollbar]::-webkit-scrollbar {
@@ -80,6 +84,18 @@ main{
 	padding: 5px;
 }
 
+#fullscreen_echo{
+	position: fixed;
+	z-index: 8192;
+	width: 100%;
+	height: 100%;
+	background: #0c0c0c;
+	overflow: scroll;
+}
+
+#fullscreen_echo_data{
+	padding: 20px;
+}
 
 .print_column{
 	margin-left: 30px;
@@ -93,6 +109,10 @@ main{
 	outline: 1px solid #102E61;
 
 	resize: horizontal;
+}
+
+.print_column:hover{
+	outline: 1px solid #2B76C2;
 }
 
 .print_column label{
@@ -175,6 +195,10 @@ main{
 	width: -moz-fill-available;
 
 	height: 25vh;
+}
+
+.print_column .worker_groups .col_print_group:hover{
+	outline: 1px solid white;
 }
 
 
