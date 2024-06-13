@@ -1,4 +1,0 @@
-pip install xor-cipher
-pip install psutil
-
-

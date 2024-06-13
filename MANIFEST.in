@@ -1,2 +1,0 @@
-graft src/jag_panzer
-include src/jag_panzer/*
