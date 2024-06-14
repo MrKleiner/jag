@@ -88,6 +88,10 @@ RSP_CODE_MAP = {
 	511: '511 Network Authentication Required',
 }
 
+def dbg_print(*args, **kwargs):
+	if __debug__:
+		print(*args, **kwargs)
+
 class StopExecution(Exception):
 	pass
 
@@ -287,10 +291,9 @@ class MinHTTPRequest:
 
 		for header in self.hlist:
 			hname, hdata = header.split(': ')
-			hname = hname.lower()
+			hname = hname.lower().strip()
 
 			if hname == 'cookie':
-				# for cookie_name, cookie_data in hdata.split(';'):
 				for cookie in hdata.split(';'):
 					cookie_name, cookie_val = cookie.split('=')
 					cookie_data[cookie_name.strip()] = cookie_val.strip()
@@ -302,7 +305,8 @@ class MinHTTPRequest:
 	def deny(self, code=None):
 		data = b'Bad Request'
 		self.sendall(
-			('HTTP/1.1' + RSP_CODE_MAP.get(code, '400 Bad Request') + '\r\n').encode()
+			('HTTP/1.1' + RSP_CODE_MAP.get(code, '400 Bad Request') + '\r\n')
+			.encode()
 		)
 		self.send_headers({
 			'Server': 'EZShare',
@@ -373,7 +377,7 @@ class MinHTTPRequest:
 
 
 class HTTPSession:
-	MAX_REQUESTS = 40
+	MAX_REQUESTS = 50
 	MAX_LIFE = 40
 
 	MAX_HEADER_BUF_SIZE = 1024*128
@@ -714,70 +718,62 @@ class Router:
 		/a/pootis/b
 		/a/fuck/b
 
-		- /a/*>:
-		Match anything after /a/, such as
+		- /a*>:
+		Match anything after /a, such as
 		/a/fuck/shit/pootis/ded/nen
 		/a/shit/sadwich/sssssss
 	"""
 	def __init__(self, routes):
+		self.handle_404 = None
 		self.route_tree = Endpoint(None, None, name='/')
 
 		for route_handler in routes:
 			print()
-			route = route_handler.route
 
-			if route == '/':
-				self.route_tree.handler = route_handler
+			if getattr(route_handler, 'handle_404', False):
+				self.handle_404 = route_handler
 				continue
 
-			path = route.strip('/').split('/')
-			path.reverse()
+			route = route_handler.route.strip()
+			if route == '/':
+				self.route_tree.handler = route_handler
+				print('Created "/" route:', route_handler)
+				continue
 
-			print('Path?', path)
+			route_stack = route.strip(' /').split('/')
+			route_stack.reverse()
+			print('Route stack:', route_stack)
 
-			endpoint_name = path.pop().strip()
-			endpoint_name_normalized = endpoint_name.replace('*>', '')
-			print(
-				'fwd endp', endpoint_name.ljust(10, ' '),
-				'parent is:', self.route_tree.name
-			)
-			endpoint_data = self.route_tree.children.get(endpoint_name_normalized)
-			if not endpoint_data:
-				endpoint_data = Endpoint(
-					self.route_tree,
-					wildcard=(endpoint_name == '*'),
-					name=endpoint_name_normalized,
-					terminal=endpoint_name.endswith('*>')
-				)
-				self.route_tree.children[endpoint_name_normalized] = endpoint_data
+			current_parent = self.route_tree
+			endp_data = None
 
-			parent = endpoint_data
-
-			# Create the endpoint
-			while path:
-				endpoint_name = path.pop()
-				endpoint_name_normalized = endpoint_name.replace('*>', '')
+			while route_stack:
+				endp_name = route_stack.pop().strip()
+				endp_name_normalized = endp_name.replace('*>', '')
 				print(
-					'fwd endp', endpoint_name.ljust(10, ' '),
-					'parent is:', parent.name
+					'Processing endpoint', endp_name.ljust(10, ' '),
+					'\n',
+					'Whose parent is:',    current_parent.name
 				)
-				endpoint_data = endpoint_data.children.get(endpoint_name_normalized)
+				endp_data = self.route_tree.children.get(endp_name_normalized)
 
-				if not endpoint_data:
-					endpoint_data = Endpoint(
-						parent,
-						wildcard=(endpoint_name == '*'),
-						name=endpoint_name_normalized,
-						terminal=endpoint_name.endswith('*>')
+				if not endp_data:
+					endp_data = Endpoint(
+						current_parent,
+						wildcard=(endp_name == '*'),
+						name=endp_name_normalized,
+						terminal=endp_name.endswith('*>')
 					)
-					parent.children[endpoint_name_normalized] = endpoint_data
+					current_parent.children[endp_name_normalized] = endp_data
 
-				parent = endpoint_data
+				current_parent = endp_data
 
-			# Assign handler to the endpoint
-			endpoint_data.handler = route_handler
+			# Once done traversing to the target path - actually
+			# assign the handler class
+			endp_data.handler = route_handler
 
 	def nav(self, htrequest):
+		# print()
 		# print('Navigating', htrequest.path)
 		handler = None
 		path_stack = htrequest.path.strip(' /')
@@ -795,8 +791,12 @@ class Router:
 				# print(
 				# 	'Searching',
 				# 	endpoint_data.name.ljust(10, ' '),
-				# 	'for', endpoint_name,
-				# 	endpoint_data.children, path_stack
+				# 	'for', endpoint_name, '\n',
+				# 	'\n'.join(
+				# 		[f'{k} {v}' for k,v in endpoint_data.children.items()]
+				# 	),
+				# 	'\n',
+				# 	path_stack
 				# )
 
 				if endpoint_data.children:
@@ -807,7 +807,7 @@ class Router:
 				# print('.items()', first_key, first_route)
 
 				if first_key == '*':
-					# print('Got wildcard trigger')
+					print('Got wildcard trigger')
 					endpoint_data = first_route
 					handler = first_route.handler
 					continue
@@ -825,13 +825,21 @@ class Router:
 					break
 
 				if not endpoint_data:
-					htrequest.deny()
+					# print('Invalid shit:', htrequest.path)
+					if self.handle_404:
+						self.handle_404(htrequest).run(htrequest)
+					else:
+						htrequest.deny(404)
 					return
 
 				handler = endpoint_data.handler
 
 		if not handler:
-			htrequest.deny()
+			# print('Invalid shit:', htrequest.path)
+			if self.handle_404:
+				self.handle_404(htrequest).run(htrequest)
+			else:
+				htrequest.deny(404)
 			return
 
 		handler(htrequest).run(htrequest)
