@@ -8,6 +8,7 @@ from urllib.parse import unquote
 import socket
 import threading
 # import io
+# fuck
 import sys
 import time
 import json
@@ -382,13 +383,13 @@ class HTTPSession:
 
 	MAX_HEADER_BUF_SIZE = 1024*128
 
-	def __init__(self, cl_con, callback):
+	def __init__(self, cl_con, callback, shared_data=None):
 		self.cl_con = cl_con
 		self.callback = callback
 
 		self.session_id = str(random.random())[0:8].ljust(8, ' ')
 
-		self.shared_data = None
+		self.shared_data = shared_data
 		self.session_data = {}
 
 		self.served_requests = 0
@@ -513,7 +514,13 @@ class HTTPSession:
 
 
 # hts = "http session"
-def http_session_pool(skt, release_event, callback, max_sessions):
+def http_session_pool(
+	skt,
+	release_event,
+	callback,
+	max_sessions,
+	shared_data=None
+):
 	try:
 		pool_id = random.random()
 
@@ -526,7 +533,7 @@ def http_session_pool(skt, release_event, callback, max_sessions):
 			print(pool_id, 'Accepted connection from', address)
 
 			hts_thread = threading.Thread(
-				target=HTTPSession(conn, callback).run,
+				target=HTTPSession(conn, callback, shared_data).run,
 				daemon=True
 			)
 			hts_pool.append(hts_thread)
@@ -548,7 +555,7 @@ def http_session_pool(skt, release_event, callback, max_sessions):
 		raise e
 
 
-def http_worker_unit(skt, callback, max_sessions):
+def http_worker_unit(skt, callback, max_sessions, shared_data=None):
 	try:
 		print('Creating parent HTTP worker unit process')
 
@@ -575,7 +582,13 @@ def http_worker_unit(skt, callback, max_sessions):
 			release_event = multiprocessing.Event()
 			proc = multiprocessing.Process(
 				target=http_session_pool,
-				args=(skt, release_event, callback, max_sessions,)
+				args=(
+					skt,
+					release_event,
+					callback,
+					max_sessions,
+					shared_data,
+				)
 			)
 			proc_stack.append(proc)
 			proc.start()
@@ -676,7 +689,12 @@ class MinHTTP:
 
 						srv_worker = multiprocessing.Process(
 							target=http_worker_unit,
-							args=(skt, self.callback, self.MAX_SESSIONS)
+							args=(
+								skt,
+								self.callback,
+								self.MAX_SESSIONS,
+								self.shared_data,
+							)
 						)
 						srv_worker_pool[idx] = srv_worker
 						srv_worker.start()
