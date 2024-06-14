@@ -302,7 +302,7 @@ class MinHTTPRequest:
 	def deny(self, code=None):
 		data = b'Bad Request'
 		self.sendall(
-			code or 'HTTP/1.1 400 Bad Request\r\n'.encode()
+			('HTTP/1.1' + RSP_CODE_MAP.get(code, '400 Bad Request') + '\r\n').encode()
 		)
 		self.send_headers({
 			'Server': 'EZShare',
@@ -364,7 +364,11 @@ class MinHTTPRequest:
 	def read_body(self):
 		return self.readall(int(self.headers['Content-Length']))
 
-
+	def redirect(self, tgt, code=307):
+		self.response_code = code
+		self.send_headers_only({
+			'Location': tgt,
+		})
 
 
 
