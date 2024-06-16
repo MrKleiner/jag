@@ -592,7 +592,10 @@ class HTTPSession:
 
 					self.wfile.flush()
 		except StopExecution as err:
-			print('Session', self.session_id, 'Stopped executing, because', err)
+			print(
+				'Session', self.session_id,
+				'Stopped executing, because', err
+			)
 		except ConnectionAbortedError as err:
 			print('Session', self.session_id, 'Got connection aborted')
 		except ConnectionResetError as err:
@@ -656,7 +659,12 @@ def http_session_pool(
 		raise e
 
 
-def http_worker_unit(skt, callback, max_sessions, shared_data=None):
+def http_worker_unit(
+	skt,
+	callback,
+	max_sessions,
+	shared_data=None
+):
 	try:
 		print('Creating parent HTTP worker unit process')
 
@@ -962,249 +970,6 @@ class Router:
 			return
 
 		handler(htrequest).run(htrequest)
-
-
-
-
-
-class _HTTPSession:
-	
-	# Max amount of requests this session will serve
-	MAX_REQUESTS = 30
-
-	# Exit the session after this amount of seconds
-	MAX_LIFE = 120
-
-	def __init__(self, cl_con, callback):
-		self.cl_con = cl_con
-		self.callback = callback
-
-		self.serves = 0
-
-		# todo: implement
-		self.shared_data = None
-
-		self.rfile = self.cl_con.makefile('rb', newline=b'\r\n')
-		self.wfile = self.cl_con.makefile('wb')
-		# self.rfile = self.cl_con.makefile('rb', 8192)
-		# self.wfile = self.cl_con.makefile('wb', 8192)
-
-		# self.can_die = threading.Event()
-
-	def collect_headers(self):
-		hlist = []
-		# self.can_die.clear()
-
-		while True:
-			# print(self.rfile, self.cl_con, dir(self.cl_con))
-			line = self.rfile.readline()
-			if not line or line == b'\r\n':
-				break
-			hlist.append(line.decode().strip())
-
-		return hlist
-
-	def run(self):
-		threading.Thread(target=self.join).start()
-
-		try:
-			print('Running HTSession')
-			while self.serves <= self.MAX_SERVES:
-				print('HTS serve #', self.serves)
-				self.serves += 1
-				self.can_die.set()
-				headers = self.collect_headers()
-
-				print('Got headers:', len(headers))
-
-				if not headers:
-					print('0 headers :( ?', headers)
-					raise StopExecution()
-
-				http_request = MinHTTPRequest(
-					headers,
-					self,
-					self.shared_data,
-					self.MAX_SERVES == self.serves
-				)
-
-				print('Serve #', self.serves, 'is last of series', self.MAX_SERVES)
-
-				self.callback(http_request)
-
-				self.wfile.flush()
-		except ConnectionAbortedError as err:
-			print('Session aborted')
-		except ConnectionResetError as err:
-			print('Session connection reset')
-		except TimeoutError as err:
-			print('Session timed out')
-		except StopExecution as err:
-			print('===============', 'Stopping Execution')
-			self.cl_con.sendall(b'HTTP/1.1 400 Bad Request\r\n')
-			# self.cl_con.sendall(b'Connection: Close\r\n')
-			self.cl_con.sendall(b'Content-Length: 4\r\n')
-			self.cl_con.sendall(b'Piss: Shit\r\n\r\n')
-			self.cl_con.sendall(b'shit')
-			# self.cl_con.sendall()
-
-			self.wfile.close()
-			self.rfile.close()
-			self.cl_con.close()
-		except Exception as err:
-			print('Unknown error')
-			print_exception(err)
-		finally:
-			try:
-				pass
-			except Exception as e:
-				pass
-
-			print('Session ended with whatever outcome, exiting', self.master_kill_call.is_set())
-
-	def join(self):
-		# Wait for the master kill call
-		self.master_kill_call.wait()
-		# Wait for local death chance
-		self.can_die.wait()
-		print('Can die now - dying')
-		# Finally die
-		try:
-			self.wfile.write(b'HTTP/1.1 400 Bad Request\r\n')
-			self.wfile.write(b'Connection: Close\r\n')
-			self.wfile.write(b'Piss: Shit\r\n\r\n')
-			self.wfile.flush()
-		except Exception as e:
-			print('============ COULD NOT WRITE SHIT', e)
-		self.cl_con.close()
-
-
-class _MinHTTP:
-	WORKER_POOL = 1
-
-	SUBWORKER_POOL = 5
-
-	MAX_SERVES = 16
-
-	# Max HTTP sessions per second
-	SPS_ALLOWANCE = 8
-
-	# How often to clear the SPS pool in seconds
-	SPS_POOL_LIFE_TIME = 100
-
-	def __init__(self, callback, shared_data=None, tgt_port=None):
-		self.callback = callback
-		self.shared_data = shared_data
-		self.addr_info = None
-		self.tgt_port = tgt_port
-
-	def sps_check(self, ip, ip_db):
-		current_time = time.time()
-
-		# print(ip_db)
-
-		ip_pool = ip_db['pool']
-
-		if ip in ip_pool:
-			# Doing this 500_000 times takes
-			# 200 ms on i5 14th gen
-			# 3 s on orangepi 3 (ARM micro PC)
-			ip_pool[ip] = [t for t in ip_pool[ip] if t > (current_time - 4)]
-		else:
-			ip_pool[ip] = []
-
-		if len(ip_pool[ip]) >= self.SPS_ALLOWANCE:
-			print('Malicious behaviour from', ip, 'detected', random.random())
-			decision = False
-		else:
-			decision =  True
-
-		ip_pool[ip].append(current_time)
-
-		if (current_time - ip_db['life']) >= self.SPS_POOL_LIFE_TIME:
-			# print('Clearing pool')
-			ip_pool.clear()
-
-		return decision
-
-	def serve_worker(self, skt):
-		# threading.Thread(target=gc_collector).start()
-
-		print('Launched worker')
-		sps_dict = {
-			'life': time.time(),
-
-			# ~100 mb for 500 000 records
-			'pool': {},
-		}
-
-		try:
-			"""
-			while True:
-				print('Opening worker pool')
-				serves = 0
-
-				kill_event = multiprocessing.Event()
-
-				pool_id = random.random()
-
-				threads = []
-
-				while serves <= self.MAX_SERVES:
-					conn, address = skt.accept()
-					# if not self.sps_check(address[0], sps_dict):
-						# conn.close()
-						# continue
-
-					print('Allowing', address, random.random())
-
-					threading.Thread(
-						target=HTTPSession(callback, conn, kill_event).run
-					)
-
-					print('Created thread', serves)
-						serves += 1
-
-				print('Terminating Pool', pool_id)
-				kill_event.set()
-				pool.close()
-				pool.join()
-				print('Terminated Pool', pool_id)
-				"""
-			while True:
-				print('Opening proxied worker pool')
-				kill_event = multiprocessing.Event()
-				proc = multiprocessing.Process(
-					target=proxy_serve_process,
-					args=(skt, kill_event, self.callback, self.MAX_SERVES)
-				)
-				proc.start()
-				proc.join()
-
-
-		except Exception as e:
-			print_exception(e)
-
-	def serve(self, tgt_port=None):
-		# socket.setdefaulttimeout(120.0)
-		skt = socket.socket()
-		# skt.setblocking(1)
-		skt.bind(
-			# ('', 8089)
-			('', tgt_port or self.tgt_port or 0)
-		)
-		skt.listen(0)
-		self.addr_info = skt.getsockname()
-		for i in range(self.WORKER_POOL):
-			multiprocessing.Process(
-				target=self.serve_worker,
-				args=(skt,)
-			).start()
-
-		# threading.Thread(target=gc_collector).start()
-
-
-
 
 
 def test_routing():
