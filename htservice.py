@@ -8,7 +8,6 @@ from urllib.parse import unquote
 import socket
 import threading
 # import io
-# fuck
 import sys
 import time
 import json
@@ -95,6 +94,13 @@ def dbg_print(*args, **kwargs):
 
 class StopExecution(Exception):
 	pass
+
+class ExhaustedHTTPRequest(Exception):
+	pass
+
+class HeadersAlreadySent(Exception):
+	pass
+
 
 # fuck python
 # fuck it very much. Retard
@@ -230,6 +236,9 @@ class MinHTTPRequest:
 		shared_data=None,
 		must_close=False
 	):
+		self.exhausted = False
+		self.headers_sent = False
+
 		self.must_close = must_close
 
 		self.cl_con = htsession.cl_con
@@ -270,6 +279,38 @@ class MinHTTPRequest:
 
 		# print('Created HTTP Request class')
 
+	@staticmethod
+	def lock_skt_rw(method):
+		def wrap(self, *args, **kwargs):
+			if self.exhausted:
+				raise ExhaustedHTTPRequest(
+					f"""HTTP Request {self} is exhausted, """
+					"""which means no data can be read/written, """
+					f"""but '{method.__name__}' requires read/write."""
+				)
+
+			self.exhausted = True
+			self.lock_headers = True
+
+			return method(self, *args, **kwargs)
+
+		return wrap
+
+	@staticmethod
+	def lock_headers(method):
+		def wrap(self, *args, **kwargs):
+			if self.headers_sent:
+				raise ExhaustedHTTPRequest(
+					f"""HTTP headers for request {self} """
+					"""have already been sent."""
+				)
+
+			self.headers_sent = True
+
+			return method(self, *args, **kwargs)
+
+		return wrap
+
 	@property
 	def response_code(self):
 		return self._response_code
@@ -303,6 +344,7 @@ class MinHTTPRequest:
 
 		return self._cookies
 
+	@lock_skt_rw
 	def deny(self, code=None):
 		data = b'Bad Request'
 		self.sendall(
@@ -324,12 +366,14 @@ class MinHTTPRequest:
 				hval = 'Close'
 			self.sendall(f"""{str(hkey)}: {str(hval)}\r\n""".encode())
 
+	@lock_headers
 	def send_headers_only(self, hdict):
 		self.sendall(f'HTTP/1.1 {self.response_code}\r\n'.encode())
 		self.send_headers(hdict)
 		self.send_headers(self.additive_headers)
 		self.sendall(b'\r\n')
 
+	@lock_skt_rw
 	def flush_bytes(self, data=None, content_type='text/plain'):
 		self.sendall(f'HTTP/1.1 {self.response_code}\r\n'.encode())
 		self.send_headers(
@@ -344,12 +388,14 @@ class MinHTTPRequest:
 		self.sendall(b'\r\n')
 		self.sendall(data)
 
+	@lock_skt_rw
 	def flush_json(self, data):
 		self.flush_bytes(
 			json.dumps(data).encode(),
 			'application/json'
 		)
 
+	@lock_skt_rw
 	def stream_chunks(self, content_type='text/plain'):
 		self.send_headers_only({
 			'Transfer-Encoding': 'chunked',
@@ -359,6 +405,7 @@ class MinHTTPRequest:
 
 		return ChunkedStream(self)
 
+	@lock_skt_rw
 	def serve_range(self, tgt_path=None, tgt_buf=None):
 		if tgt_buf:
 			ByteRangeServer(self).pipe_buffer(tgt_buf)
@@ -369,6 +416,7 @@ class MinHTTPRequest:
 	def read_body(self):
 		return self.readall(int(self.headers['Content-Length']))
 
+	@lock_skt_rw
 	def redirect(self, tgt, code=307):
 		self.response_code = code
 		self.send_headers_only({
@@ -503,7 +551,7 @@ class HTTPSession:
 		except Exception as e:
 			print_exception(e)
 		finally:
-			# todo: this was added recently VVV
+			# todo: this was added recently vvv
 			self.timeout_event.set()
 			# todo: this was added recently ^^^
 			self.close()
