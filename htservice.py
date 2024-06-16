@@ -15,6 +15,8 @@ import multiprocessing
 import random
 import urllib
 
+# import
+
 RSP_CODE_MAP = {
 	# Information responses
 	100: '100 Continue',
@@ -118,6 +120,31 @@ def print_exception(err):
 		)
 	except Exception as e:
 		print(e)
+
+
+class BodyStreamReader:
+	def __init__(self, http_request):
+		self.http_request = http_request
+		self.readall = http_request.readall
+		self.prog = 0
+		self.payload_len = http_request.headers.get('Content-Length', 0)
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, type, value, traceback):
+		# todo: does this also has to be hex ?
+		# self.sendall(b'0\r\n\r\n')
+		return
+
+	def read(self, read_size=4096):
+		if self.payload_len:
+			read_size = max(
+				min(read_size, self.payload_len),
+				0
+			)
+
+		return self.readall(read_size)
 
 
 class ChunkedStream:
@@ -258,10 +285,10 @@ class MinHTTPRequest:
 
 		parsed_url = urllib.parse.urlparse(self.path)
 
-		self.query_params:dict = (
-			{k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()}
-		)
-
+		self.query_params:dict = {
+			k:(''.join(v)) for (k,v) in urllib.parse.parse_qs(parsed_url.query, True).items()
+		}
+		
 		self._cookies = None
 
 		self.path = urllib.parse.unquote(parsed_url.path)
@@ -289,10 +316,12 @@ class MinHTTPRequest:
 					f"""but '{method.__name__}' requires read/write."""
 				)
 
+			result = method(self, *args, **kwargs)
+
 			self.exhausted = True
 			self.lock_headers = True
 
-			return method(self, *args, **kwargs)
+			return result
 
 		return wrap
 
@@ -305,9 +334,11 @@ class MinHTTPRequest:
 					"""have already been sent."""
 				)
 
+			result = method(self, *args, **kwargs)
+
 			self.headers_sent = True
 
-			return method(self, *args, **kwargs)
+			return result
 
 		return wrap
 
@@ -317,12 +348,14 @@ class MinHTTPRequest:
 
 	@response_code.setter
 	def response_code(self, code):
-		mapped_code = RSP_CODE_MAP.get(code)
+		# mapped_code = RSP_CODE_MAP.get(code)
 
-		if mapped_code:
-			self._response_code = mapped_code
-		else:
-			self._response_code = code
+		# if mapped_code:
+			# self._response_code = mapped_code
+		# else:
+			# self._response_code = code
+
+		self._response_code = RSP_CODE_MAP.get(code, code)
 
 	@property
 	def cookies(self):
@@ -345,8 +378,8 @@ class MinHTTPRequest:
 		return self._cookies
 
 	@lock_skt_rw
-	def deny(self, code=None):
-		data = b'Bad Request'
+	def deny(self, code=None, body_data=None):
+		data = body_data or b'Bad Request'
 		self.sendall(
 			('HTTP/1.1' + RSP_CODE_MAP.get(code, '400 Bad Request') + '\r\n')
 			.encode()
@@ -374,7 +407,7 @@ class MinHTTPRequest:
 		self.sendall(b'\r\n')
 
 	@lock_skt_rw
-	def flush_bytes(self, data=None, content_type='text/plain'):
+	def flush_bytes(self, data, content_type='text/plain'):
 		self.sendall(f'HTTP/1.1 {self.response_code}\r\n'.encode())
 		self.send_headers(
 			{
@@ -413,8 +446,26 @@ class MinHTTPRequest:
 			with open(str(tgt_path), 'rb') as tgt_buf:
 				ByteRangeServer(self).pipe_buffer(tgt_buf)
 
-	def read_body(self):
-		return self.readall(int(self.headers['Content-Length']))
+	def read_body(self, max_len=None):
+		content_length = self.headers.get('Content-Length')
+		if not content_length:
+			self.deny(411)
+			return
+
+		try:
+			content_length = int(content_length)
+		except ValueError:
+			self.deny(400)
+			return
+
+		if max_len and content_length > max_len:
+			self.deny(413)
+			return
+
+		return self.readall(content_length)
+
+	def read_body_stream(self):
+		return BodyStreamReader(self)
 
 	@lock_skt_rw
 	def redirect(self, tgt, code=307):
@@ -427,7 +478,7 @@ class MinHTTPRequest:
 
 class HTTPSession:
 	MAX_REQUESTS = 50
-	MAX_LIFE = 40
+	MAX_LIFE = 60
 
 	MAX_HEADER_BUF_SIZE = 1024*128
 
@@ -438,7 +489,7 @@ class HTTPSession:
 		self.session_id = str(random.random())[0:8].ljust(8, ' ')
 
 		self.shared_data = shared_data
-		self.session_data = {}
+		self.session_data = None
 
 		self.served_requests = 0
 
@@ -446,8 +497,10 @@ class HTTPSession:
 		self.wfile = cl_con.makefile('wb')
 
 		self.timeout_event = threading.Event()
-
 		self.timeout_thread = None
+
+	def extend_session(self, amt=1):
+		self.MAX_REQUESTS += amt
 
 	def collect_headers(self):
 		hbuf_len = 0
@@ -464,7 +517,7 @@ class HTTPSession:
 			hdata = [line.decode()]
 		except Exception as e:
 			self.timeout_event.clear()
-			raise ConnectionAbortedError('Could not collect header data')
+			raise ConnectionAbortedError('Could not collect header data.')
 
 		self.timeout_event.clear()
 
@@ -474,8 +527,8 @@ class HTTPSession:
 		while True:
 			if hbuf_len >= self.MAX_HEADER_BUF_SIZE:
 				raise StopExecution(
-					'Cannot collect header data further, because'
-					'the buffer size has exceeded allowed limits'
+					'Cannot collect header data further, because '
+					'the buffer size has exceeded allowed limits.'
 				)
 
 			line = self.rfile.readline(self.MAX_HEADER_BUF_SIZE)
