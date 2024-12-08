@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 import socket
 import threading
-# import io
+import io
 import sys
 import time
 import json
@@ -126,8 +126,8 @@ class BodyStreamReader:
 	def __init__(self, http_request):
 		self.http_request = http_request
 		self.readall = http_request.readall
-		self.prog = 0
-		self.payload_len = http_request.headers.get('Content-Length', 0)
+		self.prog = int(http_request.headers.get('Content-Length', 0))
+		self.payload_len = int(http_request.headers.get('Content-Length', 0))
 
 	def __enter__(self):
 		return self
@@ -137,14 +137,18 @@ class BodyStreamReader:
 		# self.sendall(b'0\r\n\r\n')
 		return
 
-	def read(self, read_size=4096):
+	def read(self, tgt_read_size=4096):
 		if self.payload_len:
 			read_size = max(
-				min(read_size, self.payload_len),
-				0
+				0,
+				min(tgt_read_size, self.prog)
 			)
+			chunk = self.readall(read_size)
+			self.prog -= len(chunk)
 
-		return self.readall(read_size)
+			return chunk
+
+		return self.readall(tgt_read_size)
 
 
 class ChunkedStream:
@@ -462,7 +466,12 @@ class MinHTTPRequest:
 			self.deny(413)
 			return
 
-		return self.readall(content_length)
+		with self.read_body_stream() as stream:
+			buf = io.BytesIO()
+			while chunk := stream.read(4096):
+				buf.write(chunk)
+
+		return buf.getvalue()
 
 	def read_body_stream(self):
 		return BodyStreamReader(self)
@@ -478,7 +487,7 @@ class MinHTTPRequest:
 
 class HTTPSession:
 	MAX_REQUESTS = 50
-	MAX_LIFE = 60
+	MAX_LIFE = 10
 
 	MAX_HEADER_BUF_SIZE = 1024*128
 
