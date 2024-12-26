@@ -44,7 +44,7 @@ class WSSMask:
 		return xored
 
 
-
+# Cunt
 class MinWSession:
 	def __init__(self, cl_con):
 		self.cl_con = cl_con
