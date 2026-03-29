@@ -275,6 +275,7 @@ class MinHTTPRequest:
 		self.cl_con = htsession.cl_con
 
 		self.shared_data = shared_data
+		# self.session_data = htsession.session_data
 		self.htsession = htsession
 
 		self.rfile = htsession.rfile
@@ -381,6 +382,10 @@ class MinHTTPRequest:
 
 		return self._cookies
 
+	@property
+	def session_data(self):
+		return self.htsession.session_data
+
 	@lock_skt_rw
 	def deny(self, code=None, body_data=None):
 		data = body_data or b'Bad Request'
@@ -415,7 +420,7 @@ class MinHTTPRequest:
 		self.sendall(f'HTTP/1.1 {self.response_code}\r\n'.encode())
 		self.send_headers(
 			{
-				'Server': 'EZShare',
+				'Server': 'JAG',
 				'Content-Type': str(content_type),
 				'Connection': 'Keep-Alive',
 				'Content-Length': len(data),
@@ -441,6 +446,20 @@ class MinHTTPRequest:
 		})
 
 		return ChunkedStream(self)
+
+	@lock_skt_rw
+	def stream_buf(self, buf, content_type='text/plain'):
+		self.send_headers_only({
+			'Server':         'JAG',
+			'Connection':     'Keep-Alive',
+			'Content-Type':   str(content_type),
+			'Content-Length': buf.seek(0, 2),
+		})
+
+		buf.seek(0, 0)
+
+		while (chunk := buf.read(8192)):
+			self.sendall(chunk)
 
 	@lock_skt_rw
 	def serve_range(self, tgt_path=None, tgt_buf=None):
@@ -780,6 +799,7 @@ class MinHTTP:
 	def run(self):
 		if not self.tgt_skt:
 			skt = socket.socket()
+			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			skt.bind(
 				('', self.tgt_port)
 			)
