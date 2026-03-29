@@ -1,8 +1,14 @@
-import hashlib, base64, struct, io, collections, json
+import hashlib
+import base64
+import struct
+import io
+import collections
+import json
+import socket
 
 try:
 	from xor_cipher import cyclic_xor
-	print('WSS v2')
+	# print('WSS v2')
 except Exception as e:
 	cyclic_xor = None
 
@@ -236,3 +242,11 @@ class MinWSession:
 
 	def send_json(self, data):
 		self.send_message(json.dumps(data).encode())
+
+
+	def terminate(self):
+		try:
+			self.cl_con.shutdown(socket.SHUT_RDWR)
+			self.cl_con.close()
+		except:
+			pass
