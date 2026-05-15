@@ -5,16 +5,14 @@ import io
 import collections
 import json
 import socket
+from jag_util import *
+
 
 try:
 	from xor_cipher import cyclic_xor
 	# print('WSS v2')
-except Exception as e:
+except:
 	cyclic_xor = None
-
-
-def clamp_num(num, tgt_min, tgt_max):
-	return max(tgt_min, min(num, tgt_max))
 
 
 
@@ -24,15 +22,18 @@ class WSSMask:
 		self.bytes_static = mask_bytes
 		self.bytes = collections.deque(list(mask_bytes))
 
-		self.cyclic_xor = None
-
 		# todo: mention this in the manual
 		if cyclic_xor:
 			self.cyclic_xor = cyclic_xor
-			self.unmask = self.unmask_xcipher
+			self.unmask =     self.unmask_xcipher
 		else:
-			self.unmask = unmask_native
 			self.cyclic_xor = None
+			self.unmask =     self.unmask_native
+
+	def unmask(self):
+		raise AttributeError(
+			'WSSMask.unmask was never initialized ???'
+		)
 
 	def unmask_native(self, data, mask):
 		bt_array = bytearray(data)
@@ -50,54 +51,46 @@ class WSSMask:
 		return xored
 
 
-# Cunt
+
 class MinWSession:
-	def __init__(self, cl_con):
+	# Don't read incoming message into io.Bytes()
+	# if it's smaller than this
+	RECV_BUF_FLOOR = 512
+
+	def __init__(self, cl_con, resolve_immediately=True):
 		self.cl_con = cl_con
-		try:
-			self.resolve_handshake()
-		except Exception as e:
-			print(e)
-		
 
-	# aligned_receive
-	def aligned_recv(self, bufsize, chunk_size=8192):
-		# Shouldn't this print a warning or something ?
-		if bufsize <= 0:
-			return b''
+		self.hshake_resolved = False
 
-		# Creating an io.BytesIO buffer to receive 2 bytes
-		# is MUCH slower than simple concatenating (b'' + ...)
-		# Through tests it was determined that there's no need to
-		# create a buffer for receiving less than 512 bytes.
-		# todo: Lower the number a little bit just to be sure?
-		if bufsize < 512:
-			buf = b''
-			# print('Need to receive:', bufsize)
-			while True:
-				# todo: raise a warning when the result is actually longer
-				# than anticipated
-				if len(buf) >= bufsize:
-					return buf
+		self.input_wss_key = None
+		self.output_wss_key = None
 
-				data = self.cl_con.recv(
-					clamp_num(chunk_size, 1, bufsize - len(buf))
-				)
-				buf += data
-		else:
-			buf = self.io.BytesIO()
-			while True:
-				if buf.tell() >= bufsize:
-					return buf.getvalue()
+		if resolve_immediately:
+			try:
+				self.resolve_handshake()
+			except Exception as e:
+				print_exception(e)
+				raise e
 
-				data = self.cl_con.recv(
-					clamp_num(chunk_size, 1, bufsize - buf.tell())
-				)
-				buf.write(data)
+	@staticmethod
+	def check_handshake(state):
+		def decorator(method):
+			def wrap(self, *args, **kwargs):
+				if self.hshake_resolved != state:
+					raise AttributeError(
+						'Calling this requires handshake to be '
+						f"""{'NOT resolved' if not state else 'resolved'}"""
+					)
+				return method(self, *args, **kwargs)
+			return wrap
+		return decorator
 
-		return buf
+	def aligned_recv(self, *args, **kwargs):
+		return aligned_recv(
+			self.cl_con, *args, **kwargs
+		)
 
-
+	@check_handshake(False)
 	def resolve_handshake(self):
 		skt_file = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
 		hlist = []
@@ -126,13 +119,19 @@ class MinWSession:
 			)
 			# important todo: is this magic string actually important ?
 			# aka could it be any other string ?
-			resolve['Sec-WebSocket-Accept'] = base64.b64encode(self.output_wss_key.digest()).decode()
+			resolve['Sec-WebSocket-Accept'] = (
+				base64.b64encode(self.output_wss_key.digest())
+				.decode()
+			)
 
 		self.cl_con.sendall(b'HTTP/1.1 101 Switching Protocols\r\n')
 		for key in resolve:
-			self.cl_con.sendall(f"""{key}: {resolve[key]}\r\n""".encode())
+			self.cl_con.sendall(
+				f"""{key}: {resolve[key]}\r\n""".encode()
+			)
 		self.cl_con.sendall(b'\r\n')
 
+		self.hshake_resolved = True
 
 	def eval_length(self, data, strip_mask=True):
 		"""
@@ -153,9 +152,9 @@ class MinWSession:
 				if strip_mask:
 					data_unpack = data_unpack & 0b01111111
 				length = data_unpack
-			if len(data) == 2:
+			elif len(data) == 2:
 				length = struct.unpack('!H', data)[0]
-			if len(data) == 3:
+			else:
 				length = struct.unpack('!Q', data)[0]
 
 			return length
@@ -165,8 +164,7 @@ class MinWSession:
 				data = data & 0b01111111
 			return data
 
-
-	# Receive a message
+	@check_handshake(True)
 	def recv_message(self):
 		msg_buf = io.BytesIO()
 
@@ -210,7 +208,7 @@ class MinWSession:
 
 		return msg_buf.getvalue()
 
-
+	@check_handshake(True)
 	def send_message(self, data):
 		data_len = len(data)
 		head1 = (
@@ -239,10 +237,12 @@ class MinWSession:
 		self.cl_con.sendall(header)
 		self.cl_con.sendall(data)
 
-
+	@check_handshake(True)
 	def send_json(self, data):
-		self.send_message(json.dumps(data).encode())
-
+		self.send_message(
+			json.dumps(data)
+			.encode()
+		)
 
 	def terminate(self):
 		try:
@@ -250,3 +250,6 @@ class MinWSession:
 			self.cl_con.close()
 		except:
 			pass
+
+
+

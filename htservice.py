@@ -4,6 +4,7 @@ Simple multiprocessed HTTP server.
 """
 
 from urllib.parse import unquote
+from concurrent.futures import ThreadPoolExecutor
 
 import socket
 import threading
@@ -15,7 +16,7 @@ import multiprocessing
 import random
 import urllib
 
-# import
+IS_WIN = sys.platform.startswith('win')
 
 RSP_CODE_MAP = {
 	# Information responses
@@ -143,8 +144,10 @@ class BodyStreamReader:
 				0,
 				min(tgt_read_size, self.prog)
 			)
-			chunk = self.readall(read_size)
-			self.prog -= len(chunk)
+			# chunk = self.readall(read_size)
+			self.prog -= len(
+				chunk := self.readall(read_size)
+			)
 
 			return chunk
 
@@ -153,8 +156,9 @@ class BodyStreamReader:
 
 class ChunkedStream:
 	def __init__(self, http_request):
+		# http_request.htsession.wfile.flush()
 		self.http_request = http_request
-		self.sendall = http_request.sendall
+		self.sendall = http_request.htsession.cl_con.sendall
 
 	def __enter__(self):
 		return self
@@ -279,10 +283,10 @@ class MinHTTPRequest:
 		self.htsession = htsession
 
 		self.rfile = htsession.rfile
-		self.wfile = htsession.wfile
+		# self.wfile = htsession.wfile
 
 		self.readall = htsession.rfile.read
-		self.sendall = htsession.wfile.write
+		self.sendall = self.cl_con.sendall
 
 		self.hlist = hlist
 		self.method, self.path, self.protocol = self.hlist[0].split(' ')
@@ -301,7 +305,10 @@ class MinHTTPRequest:
 
 		self.headers = {}
 
-		self.additive_headers = {}
+		self.additive_headers = {
+			'Jag-S': self.htsession.session_id,
+			'Jag-I': f'{self.htsession.served_requests}/{self.htsession.MAX_REQUESTS}',
+		}
 
 		self._response_code = '200 OK'
 
@@ -448,7 +455,7 @@ class MinHTTPRequest:
 		return ChunkedStream(self)
 
 	@lock_skt_rw
-	def stream_buf(self, buf, content_type='text/plain'):
+	def _stream_buf(self, buf, content_type='application/octet-stream', chunksize=None):
 		self.send_headers_only({
 			'Server':         'JAG',
 			'Connection':     'Keep-Alive',
@@ -458,8 +465,28 @@ class MinHTTPRequest:
 
 		buf.seek(0, 0)
 
-		while (chunk := buf.read(8192)):
+		chunksize = chunksize or 1024**2
+
+		while (chunk := buf.read(chunksize)):
 			self.sendall(chunk)
+
+	@lock_skt_rw
+	def stream_buf(self, buf, content_type='application/octet-stream', chunksize=None):
+		self.send_headers_only({
+			'Server':         'JAG',
+			'Connection':     'Keep-Alive',
+			'Content-Type':   str(content_type),
+			'Content-Length': buf.seek(0, 2),
+		})
+
+		buf.seek(0, 0)
+
+		chunksize = chunksize or 1024**2
+
+		# self.htsession.wfile.flush()
+
+		while (chunk := buf.read(chunksize)):
+			self.htsession.cl_con.sendall(chunk)
 
 	@lock_skt_rw
 	def serve_range(self, tgt_path=None, tgt_buf=None):
@@ -487,7 +514,7 @@ class MinHTTPRequest:
 
 		with self.read_body_stream() as stream:
 			buf = io.BytesIO()
-			while chunk := stream.read(4096):
+			while chunk := stream.read((1024**2)*10):
 				buf.write(chunk)
 
 		return buf.getvalue()
@@ -500,7 +527,10 @@ class MinHTTPRequest:
 		self.response_code = code
 		self.send_headers_only({
 			'Location': tgt,
+			'Content-Length': 2,
 		})
+
+		self.sendall(b'MV')
 
 
 
@@ -510,10 +540,11 @@ class HTTPSession:
 
 	MAX_HEADER_BUF_SIZE = 1024*128
 
-	def __init__(self, cl_con, callback, shared_data=None):
+	def __init__(self, cl_con, callback, shared_data=None, pool_id=None):
 		self.cl_con = cl_con
 		self.callback = callback
 
+		self.pool_id = str(pool_id)[0:8].ljust(8, ' ')
 		self.session_id = str(random.random())[0:8].ljust(8, ' ')
 
 		self.shared_data = shared_data
@@ -522,10 +553,10 @@ class HTTPSession:
 		self.served_requests = 0
 
 		self.rfile = cl_con.makefile('rb', newline=b'\r\n', buffering=0)
-		self.wfile = cl_con.makefile('wb')
+		# self.wfile = cl_con.makefile('wb')
 
 		self.timeout_event = threading.Event()
-		self.timeout_thread = None
+		self.timeout_handle = None
 
 	def extend_session(self, amt=1):
 		self.MAX_REQUESTS += amt
@@ -570,10 +601,10 @@ class HTTPSession:
 	# Close all the files and the socket connection
 	def close(self):
 		try:
-			self.wfile.flush()
+			# self.wfile.flush()
 			self.rfile.flush()
 
-			self.wfile.close()
+			# self.wfile.close()
 			self.rfile.close()
 
 			self.cl_con.shutdown(socket.SHUT_RDWR)
@@ -581,8 +612,8 @@ class HTTPSession:
 		except Exception as e:
 			pass
 
-	def start_countdown(self):
-		time.sleep(self.MAX_LIFE)
+	def max_life_end(self):
+		print(self.session_id, 'Max Life End Triggered')
 		self.served_requests = self.MAX_REQUESTS
 		self.timeout_event.wait()
 		print('='*10,'Timeout event released')
@@ -590,13 +621,14 @@ class HTTPSession:
 
 	def run(self):
 		# todo: this was added recently VVV
-		self.timeout_thread = threading.Thread(target=self.start_countdown)
-		self.timeout_thread.start()
+		self.timeout_handle = threading.Timer(self.MAX_LIFE, self.max_life_end)
+		self.timeout_handle.start()
 		# todo: this was added recently ^^^
 
 		try:
 			while self.served_requests <= self.MAX_REQUESTS:
 				print(
+					'Pool', self.pool_id,
 					'Session', self.session_id,
 					'Serving request #', self.served_requests,
 					'of', self.MAX_REQUESTS
@@ -618,7 +650,7 @@ class HTTPSession:
 						self.served_requests == self.MAX_REQUESTS
 					))
 
-					self.wfile.flush()
+					# self.wfile.flush()
 		except StopExecution as err:
 			print(
 				'Session', self.session_id,
@@ -636,17 +668,17 @@ class HTTPSession:
 			print_exception(e)
 		finally:
 			# todo: this was added recently vvv
-			self.timeout_event.set()
+			self.timeout_handle.cancel()
 			# todo: this was added recently ^^^
+
 			self.close()
-			# self.timeout_thread.join()
 			print(
 				'Session', self.session_id, 'Finished'
 			)
 
 
 # hts = "http session"
-def http_session_pool(
+def _http_session_pool(
 	skt,
 	release_event,
 	callback,
@@ -682,6 +714,83 @@ def http_session_pool(
 
 		print('Successfully collapsed all threads from the pool')
 
+	except Exception as e:
+		print_exception(e)
+		raise e
+
+
+def __http_session_pool(
+	skt,
+	release_event,
+	callback,
+	max_sessions,
+	shared_data=None
+):
+	try:
+		pool_id = random.random()
+
+		print('Created session thread pool process')
+
+		executor = ThreadPoolExecutor(max_workers=32)
+
+		for _ in range(max_sessions):
+			conn, addr = skt.accept()
+			executor.submit(
+				HTTPSession(conn, callback, shared_data).run
+			)
+
+		release_event.set()
+		print('HT Session pool served max sessions. Collapsing')
+
+		executor.shutdown(wait=True)
+
+		print('Successfully collapsed all threads from the pool')
+	except Exception as e:
+		print_exception(e)
+		raise e
+
+
+def http_session_pool(
+	skt_data,
+	release_event,
+	callback,
+	max_sessions,
+	shared_data=None
+):
+	try:
+		if IS_WIN:
+			skt = skt_data
+		else:
+			skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+			skt.bind(('', skt_data))
+
+			skt.listen(4096)
+
+		pool_id = random.random()
+
+		print('Created session thread pool process')
+
+		executor = ThreadPoolExecutor(max_workers=32)
+
+		for _ in range(max_sessions):
+			conn, addr = skt.accept()
+			executor.submit(
+				HTTPSession(conn, callback, shared_data, pool_id)
+				.run
+			)
+
+		skt.close()
+
+		release_event.set()
+		print('HT Session pool served max sessions. Collapsing')
+
+		executor.shutdown(wait=True)
+
+		print('Successfully collapsed all threads from the pool')
 	except Exception as e:
 		print_exception(e)
 		raise e
@@ -769,7 +878,7 @@ class MinHTTP:
 	MAX_SESSIONS = 15
 
 	# Used for skt.listen(self.CON_HARD_LIMIT)
-	CON_HARD_LIMIT = 0
+	CON_HARD_LIMIT = 4096
 
 	# Timeout between cycles of checking whether
 	# all the processess in hts worker pool are alive
@@ -796,7 +905,7 @@ class MinHTTP:
 		# Required if specified port is 0
 		self.addr_info = None
 
-	def run(self):
+	def _run(self):
 		if not self.tgt_skt:
 			skt = socket.socket()
 			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -829,6 +938,62 @@ class MinHTTP:
 							target=http_worker_unit,
 							args=(
 								skt,
+								self.callback,
+								self.MAX_SESSIONS,
+								self.shared_data,
+							)
+						)
+						srv_worker_pool[idx] = srv_worker
+						srv_worker.start()
+
+				time.sleep(self.HTS_STATUS_CHECK_COOLDOWN)
+			except Exception as e:
+				print_exception(e)
+				continue
+
+	def run(self):
+		if not self.tgt_skt:
+			skt = socket.socket()
+			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+			if not IS_WIN:
+				skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+			skt.bind(
+				('', self.tgt_port)
+			)
+			skt.listen(self.CON_HARD_LIMIT)
+		else:
+			# Todo: make sure it's listening
+			skt = self.tgt_skt
+
+		self.skt = skt
+
+		# skt.settimeout(RECV_TIMEOUT)
+
+		self.addr_info = skt.getsockname()
+
+		try:
+			if not self.tgt_skt and not IS_WIN:
+				skt.close()
+		except Exception as e:
+			pass
+
+		srv_worker_pool = [None]*self.WORKER_POOL_SIZE
+
+		# Apparently, hts workers can crash irreversibly
+		while True:
+			try:
+				for idx, proc in enumerate(srv_worker_pool):
+					if not proc or not proc.is_alive():
+						if proc != None:
+							print('Found dead HTS worker')
+							proc.join()
+
+						srv_worker = multiprocessing.Process(
+							target=http_worker_unit,
+							args=(
+								self.addr_info[1] if (not IS_WIN) else skt,
 								self.callback,
 								self.MAX_SESSIONS,
 								self.shared_data,
