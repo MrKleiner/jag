@@ -7,12 +7,20 @@ import socket
 import urllib
 import time
 import sys
+import os
+import logging
+import builtins
+import multiprocessing
+import logging.handlers as logging_handlers
 
 from urllib.parse import unquote as url_unquote
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+
 
 from .jag_util import *
 from .mimes import RSP_CODE_MAP
+
 
 
 RN_BYTES = b'\r\n'
@@ -24,6 +32,33 @@ B_KB = 1024
 B_MB = B_KB**2
 
 REUSEPORT_AVAILABLE = hasattr(socket, 'SO_REUSEPORT')
+
+
+dbg_print = print
+
+
+
+def place_kcas(sched):
+	real_print = print
+
+	def impostorous_print(*args, **kwargs):
+		try:
+			sep = str(kwargs.get('sep', ' '))
+			end = str(kwargs.get('end', '\n'))
+
+			sched.put(
+				# '[KCAS]' + sep.join(str(arg) for arg in args)
+				sep.join(str(arg) for arg in args)
+				# '[KCAS]' + sep.join(str(arg) for arg in args) + end
+				# '[KCAS]' + '\n' + sep.join(str(arg) for arg in args) + end
+			)
+		except Exception as e:
+			real_print(
+				'LOGGER FATAL:',
+				str_exception(e)
+			)
+
+	builtins.print = impostorous_print
 
 
 
@@ -584,8 +619,10 @@ class JagReply(NamedPrint):
 			RN_STR,
 		)).encode())
 		self.headers.send_to(self.skt_raw)
-		self.nprint('SENDING HEADERS:')
-		print(self.headers.to_printable())
+		self.nprint(
+			'SENDING HEADERS:',
+			'\n', self.headers.to_printable()
+		)
 		self.skt_raw.sendall(RN_BYTES)
 
 	@lock_pwrite
@@ -840,7 +877,7 @@ class JagSession(NamedPrint):
 	DEFAULT_MAX_REQUESTS = 100
 	DEFAULT_LIFE_DUR_S = 85.000
 
-	# The client has this many seconds to finish sending headers
+	# The client has this many seconds to FINISH sending headers
 	# before the socket is force terminated
 	DEFAULT_RECV_HEADERS_TIMEOUT_S = 10.000
 
@@ -880,9 +917,10 @@ class JagSession(NamedPrint):
 		self.query_size_limit = query_size_limit
 		self.hbuf_size_limit =  hbuf_size_limit
 
-		self.show_err_traceback = self.DEFAULT_SHOW_ERR_TRACEBACK
-		if show_err_traceback in (True, False):
-			self.show_err_traceback = show_err_traceback
+		self.show_err_traceback = bool_param(
+			show_err_traceback,
+			self.DEFAULT_SHOW_ERR_TRACEBACK
+		)
 
 		self.remaining_requests = self.max_requests
 
@@ -981,7 +1019,10 @@ class JagSession(NamedPrint):
 				session=self,
 			)
 
-			self.nprint('Got Request:')
+			self.nprint(
+				'Got Request:',
+				# req.to_printable(),
+			)
 			# print(req.to_printable())
 
 			reply = self.spawn_reply()
@@ -1045,7 +1086,7 @@ class JagSession(NamedPrint):
 
 		self.terminate()
 
-		self.nprint('Exited')
+		self.nprintf('Exited')
 
 	def run_auto(self):
 		for _ in self.run():
@@ -1054,141 +1095,525 @@ class JagSession(NamedPrint):
 
 
 
-class MPSocketAcceptorThreadPool(NamedPrint):
-	DEFAULT_THREAD_AMOUNT = 16
+
+# No, sockets absolutely should NOT be placed in a fucking sched or anything,
+# because that's basically a fucking limbo, which is unacceptable.
+class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
+	DEFAULT_THREAD_AMOUNT = 16 * 3
 	DEFAULT_MAX_SESSIONS =  50
 
-	DEFAULT_MAX_LIFE_S =       67.000
-	DEFAULT_FINISH_TIMEOUT_S = 69.000
+	DEFAULT_MAX_LIFE_S =       169.000
+	DEFAULT_FINISH_TIMEOUT_S = DEFAULT_MAX_LIFE_S * 0.5
+
+	DEFAULT_USE_BETTER_TIMERS = True
+
 
 	def __init__(self,
+		# mp pipe to receive socket connections from
+		pipe,
+
+		# Part of params for JagSession, but none of this
+		# can exist without a callback, so it's mandatory
 		callback,
 
+		# Amount of threads in thread pool
 		thread_amount=None,
+		# How many sessions can pass through this pool
 		max_sessions=None,
+		# Max. life of this pool in seconds.
+		# Once this is reached - the pool stops accepting connections
+		# and waits for existing connections to finish
 		max_life_s=None,
+		# When the timeout described above is reached - existing sessions
+		# have this many seconds to finish executing before this process
+		# and therefore their connection is force terminated
 		finish_timeout_s=None,
 
-		session_config=None,
+		# Whether to substitute threading.Timer with jag's shit,
+		# which is SUPPOSEDLY better & faster
+		user_better_timers=None,
+
+		# KCAS
+		kcas=None,
+		# WS debug junction
+		debug_junction=None,
+
+		# Params for JagSession
+		session_args=None,
+		session_kwargs=None,
 	):
+		super().__init__(
+			max_life_s or self.DEFAULT_MAX_LIFE_S
+		)
+
+		self.pipe = pipe
 		self.callback = callback
+
+		self.kcas = kcas
+		self.debug_junction = debug_junction
 
 		self.thread_amount =    thread_amount    or self.DEFAULT_THREAD_AMOUNT
 		self.max_sessions =     max_sessions     or self.DEFAULT_MAX_SESSIONS
-		self.max_life_s =       max_life_s       or self.DEFAULT_MAX_LIFE_S
 		self.finish_timeout_s = finish_timeout_s or self.DEFAULT_FINISH_TIMEOUT_S
 
-		self.session_config = session_config
+		self.session_args = tuple(session_args or ())
+		self.session_kwargs = dict(session_kwargs or {})
 
-		self.pipe = None
-		self.proc = None
+		self.session_counter = 0
 
-		self.termination_lock = threading.Lock()
+		if bool_param(user_better_timers, self.DEFAULT_USE_BETTER_TIMERS):
+			self.timer_sched = FasterTimerSched()
+			self.better_timer = self.timer_sched.timer
+			self.session_kwargs['better_timer'] = self.better_timer
+		else:
+			self.timer_sched = None
+			self.better_timer = None
+
+	@staticmethod
+	def os_exit():
+		os._exit(1)
 
 	@classmethod
-	def run_pool(cls,
-		pipe,
-		callback,
-		thread_amount,
-		session_config=None,
-	):
+	def mp_spawn(cls, kcas, *args, **kwargs):
 		try:
-			thread_pool = ThreadPoolExecutor(max_workers=thread_amount)
+			if kcas:
+				place_kcas(kcas)
 
-			while True:
-				cl_con = self.pipe.recv()
-				cls.nprintc('Got socket:', cl_con)
-
-				if not cl_con:
-					cls.nprint('Received collapse signal:', cl_con)
-					thread_pool.shutdown(wait=True)
-					break
-
-				thread_pool.submit(
-					JagSession(
-						cl_con,
-						self.callback,
-						**dict(self.session_config),
-					)
-					.run_auto
-				)
-
-				pipe.send(True)
-
+			cls(*args, **kwargs).run()
 		except Exception as e:
+			dbg_print('--FATAL--:', e)
 			cls.nprint('FATAL:', e)
 			print_exception_framed(e)
 		finally:
-			sys.exit()
+			cls.os_exit()
+
+	def timeout_callback(self):
+		self.nprintf('Timeout triggered')
+		time.sleep(self.finish_timeout_s)
+		self.os_exit()
+
+	@contextlib.contextmanager
+	def timeout(self, timeout_override=None):
+		timer = (self.better_timer or threading.Timer)(
+			timeout_override or self.life_remaining,
+			self.timeout_callback,
+		)
+
+		try:
+			timer.start()
+			yield timer
+		finally:
+			timer.cancel()
+
+	@LifeRemaining.clock_start
+	def run(self):
+		# Create pool for JagSession instances
+		thread_pool = ThreadPoolExecutor(
+			max_workers=self.thread_amount
+		)
+
+		while (self.session_counter < self.max_sessions):
+			# First message is always a probe
+			# Basically, LIFE timeout can ONLY interrupt the probe message
+			# to ensure that no socket gets denied
+			with self.timeout():
+				self.nprintf(
+					'Received probe:',
+					self.pipe.recv(),
+				)
+
+			# Everything inside this should happen within milliseconds
+			with self.timeout(5.000):
+				# Whether next message is expected to be a socket
+				skt_expected = (
+					# Whether max session amount has been reached
+					(self.session_counter < self.max_sessions)
+					# Whether max life duration has been reached
+					# (with a tiny threshold of 17% of max. life duration)
+					and (self.life_remaining > (self.lfr_dur_s * 0.17))
+				)
+
+				# Reply whether a socket can be accepted
+				self.pipe.send(skt_expected)
+
+				self.nprintf('Replied with:', skt_expected)
+
+				if not skt_expected:
+					break
+
+				# This now has to be a valid socket connection
+				if not (skt_con := self.pipe.recv()):
+					raise ValueError(
+						'FATAL: Socket connection expected, '
+						f'but got {skt_con}'
+					)
+
+			self.nprint('Received connection:', skt_con)
+
+			# Run the session
+			thread_pool.submit(
+				JagSession(
+					skt_con,
+					self.callback,
+
+					*self.session_args,
+					**self.session_kwargs,
+				)
+				.run_auto
+			)
+
+			# Signal that everything SEEMS to have gone ok
+			self.pipe.send(True)
+
+			self.session_counter += 1
+
+		try:
+			self.pipe.close()
+		except Exception as e:
+			print_exception_framed(e)
+		finally:
+			# Call timeout callback manually, because running out of
+			# session space is basically the same as life timeout
+			self.nprint('Max sessions reached. Starting termination countdown')
+			self.timeout_callback()
 
 
 
-
+# Persistent worker
 class MPSocketAcceptor(NamedPrint):
-	DEFAULT_POOL_COUNT =         3
+	DEFAULT_POOL_AMOUNT = 3 * 2
+	DEFAULT_SKT_CON_HARD_LIMIT = 4096
 
 	def __init__(self,
+		# EITHER port to listen on
+		# (useful on Linux where ports can somehow be reused)
+		# OR a socket object
+		# (Windows can't reuse ports)
 		skt_data,
+
+		# Callback function to call on each HTTP request
 		callback,
 
-		pool_count=None,
-		pool_max_life_s=None,
-		pool_finish_timeout_s=None,
+		# How many thread pools to keep
+		pool_amount=None,
 
-		session_config=None,
+		# Kcas prints
+		kcas=None,
+		# WS live debug
+		debug_junction=None,
+
+		# Args for MPSocketAcceptorThreadPool
+		pool_args=None,
+		pool_kwargs=None,
+
+		# Args for JagSession
+		session_args=None,
+		session_kwargs=None,
 	):
+		# Can't be port 0
+		# Can't be None
+		# HAS TO BE a non-zero number or otherwise valid object
 		if not skt_data:
-			raise ValueError(
+			msg = (
 				f'FATAL: invalid skt_data ({skt_data})'
 			)
+			self.nprint(msg)
+			raise ValueError(msg)
 
-		if isinstance(skt_data, int) and not REUSEPORT_AVAILABLE:
-			raise ValueError(
-				f'FATAL: skt_data seems to be a port, but socket.SO_REUSEPORT '
-				'is NOT available'
+		# Reuseport is only available on Linux
+		if isinstance(skt_data, tuple) and not REUSEPORT_AVAILABLE:
+			msg = (
+				f'FATAL: skt_data ({skt_data}) seems to be a port, '
+				'but socket.SO_REUSEPORT is NOT available'
 			)
+			self.nprint(msg)
+			raise ValueError(msg)
 
 		self.skt_data = skt_data
 		self.callback = callback
 
-		self.pool_count =         pool_count         or self.DEFAULT_POOL_COUNT
+		self.kcas = kcas
+		self.debug_junction = debug_junction
 
-		self.pool_max_life_s =       pool_max_life_s
-		self.pool_finish_timeout_s = pool_finish_timeout_s
+		self.pool_amount = pool_amount or self.DEFAULT_POOL_AMOUNT
 
-		self.session_config = tuple(
-			(session_config or {}).items()
-		)
+		self.pool_args = (callback, *tuple(pool_args or ()))
+		self.pool_kwargs = pool_kwargs or {}
 
-		self.pool_array = []
+		self.pool_kwargs.update({
+			'session_args': tuple(session_args or ()),
+			'session_kwargs': dict(session_kwargs or {}),
+			'debug_junction': debug_junction.fork() if debug_junction else None,
+		})
+
+		self.pool_array = set()
 
 		self._listen_skt = None
 
+	@staticmethod
+	def os_exit():
+		os._exit(1)
+
 	@classmethod
-	def mp_spawn(cls, *args, **kwargs):
-		cls(*args, **kwargs).run()
+	def mp_spawn(cls, kcas, *args, **kwargs):
+		acceptor = None
+		try:
+			if kcas:
+				place_kcas(kcas)
+				kwargs['kcas'] = kcas
+
+			acceptor = cls(*args, **kwargs).run()
+		except Exception as e:
+			print_exception_framed(e)
+			if acceptor:
+				acceptor.terminate()
+		finally:
+			cls.os_exit()
 
 	@property
 	def listen_skt(self):
 		if self._listen_skt != None:
 			return self._listen_skt
 
-		if isinstance(self.skt_data, int) and REUSEPORT_AVAILABLE:
+		if isinstance(self.skt_data, tuple) and REUSEPORT_AVAILABLE:
 			self.nprint('REUSEPORT')
 			self._listen_skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 			self._listen_skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			self._listen_skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
-			self._listen_skt.bind(
-				('', self.skt_data)
-			)
+			self._listen_skt.bind(self.skt_data)
 
-			self._listen_skt.listen(4096)
+			self._listen_skt.listen(
+				self.DEFAULT_SKT_CON_HARD_LIMIT
+			)
 		else:
 			self.nprint('SOCKET AS IS')
 			self._listen_skt = self.skt_data
 
 		return self._listen_skt
+
+	def terminate(self):
+		try:
+			for pool_proc, _ in tuple(self.pool_array):
+				try:
+					pool_proc.kill()
+				except Exception as e:
+					print_exception_framed(e)
+		except Exception as e:
+			print_exception_framed(e)
+		finally:
+			self.os_exit()
+
+	def spawn_pool(self):
+		pool_pipe_a, pool_pipe_b = multiprocessing.Pipe()
+		pool_proc = multiprocessing.Process(
+			target=MPSocketAcceptorThreadPool.mp_spawn,
+
+			args=(
+				self.kcas,
+				pool_pipe_a,
+				*self.pool_args
+			),
+			kwargs=self.pool_kwargs,
+		)
+		pool_proc.start()
+
+		pool_data = (pool_proc, pool_pipe_b)
+
+		self.pool_array.add(pool_data)
+
+		return pool_data
+
+	def remove_pool(self, pool_data):
+		pool_proc, pool_pipe = pool_data
+		try:
+			pool_proc.kill()
+			pool_proc.join()
+			self.pool_array.remove(pool_data)
+		except Exception as e:
+			print_exception_framed(e)
+
+	def find_free_pool(self):
+		tgt_pool = None
+		for pool_data in tuple(self.pool_array):
+			pool_proc, pool_pipe = pool_data
+			try:
+				if not pool_proc.is_alive():
+					self.nprintf('Found dead pool. Removing', pool_data)
+					self.remove_pool(pool_data)
+					continue
+
+				if not tgt_pool:
+					# Send probe
+					pool_pipe.send(None)
+					# If reply ok - the pool is waiting for a socket
+					if pool_pipe.recv():
+						tgt_pool = pool_data
+			except Exception as e:
+				print_exception_framed(e)
+				# Exception here means the pool is finally and officially dead
+				self.remove_pool(pool_data)
+
+		return tgt_pool
+
+		self.nprintf('Could not find free pool')
+		return None
+
+	def assign_con(self, cl_con, pool_data):
+		pool_proc, pool_pipe = pool_data
+		try:
+			pool_pipe.send(cl_con)
+			if pool_pipe.recv():
+				# cl_con.close()
+				return True
+			else:
+				self.remove_pool(pool_data)
+		except Exception as e:
+			self.nprintf('Failed to assign client connection to a pool:')
+			print_exception_framed(e)
+			self.remove_pool(pool_data)
+
+		return False
+
+	def run(self):
+		while True:
+			cl_con, cl_addr = self.listen_skt.accept()
+			self.nprint('Accepted connection:', cl_con, cl_addr)
+
+			while True:
+				# See if a pool is available
+				if (pool_data := self.find_free_pool()):
+					self.nprintf('Found free pool after waiting')
+					self.assign_con(cl_con, pool_data)
+					break
+
+				# Check if a new pool can be created. If not - wait
+				if len(self.pool_array) < self.pool_amount:
+					for _ in range(3):
+						self.spawn_pool()
+						if self.assign_con(cl_con, self.find_free_pool()):
+							self.nprintf(
+								'Created a new pool and assigned '
+								'a connection to it'
+							)
+							break
+					else:
+						raise ValueError(
+							'FATAL: Too many failed pool creation attempts'
+						)
+
+					break
+
+				self.nprintf('Waiting for a free spot')
+				time.sleep(0.250)
+
+
+
+
+class JagNetworking(NamedPrint):
+	DEFAULT_ACCEPTOR_AMOUNT = 3 * 2
+	ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S = 3.000
+
+	ELABORATE_LOGGING = True
+	WS_DEBUG = False
+
+	def __init__(self, bind_addr):
+		self.bind_addr = bind_addr
+
+	@staticmethod
+	def logs_printer(sched):
+		while True:
+			dbg_print(
+				sched.get()
+			)
+
+	# Create a windows socket
+	@staticmethod
+	def winskt(addr):
+		skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		skt.bind(addr)
+		# todo: this means Windows has no client limit
+		skt.listen(0)
+
+		return skt
+
+	def mp(self, *args, acceptor_amount=None, **kwargs):
+		with multiprocessing.Manager() as mp_mng:
+			# Make print statements run sequentially
+			if self.ELABORATE_LOGGING:
+				log_sched = mp_mng.Queue()
+				printer_th = threading.Thread(
+					target=self.logs_printer,
+					args=(log_sched,),
+					daemon=True
+				)
+				printer_th.start()
+				self.nprintf('Started logs printer thread')
+				place_kcas(log_sched)
+				self.nprintf('Placed KCAS in main process')
+			else:
+				log_sched = None
+
+
+			# Websocket live monitoring
+			if self.WS_DEBUG:
+				debug_junction = DebugJunction()
+				debug_junction.run()
+				kwargs['debug_junction'] = debug_junction.fork()
+			else:
+				debug_junction = None
+
+
+			# If no REUSEPORT available - reuse pre-made socket object
+			if REUSEPORT_AVAILABLE:
+				skt_data = self.bind_addr
+			else:
+				skt_data = self.winskt(self.bind_addr)
+
+
+			# Create acceptor pool
+			acceptor_pool = set()
+			for _ in range(acceptor_amount or self.DEFAULT_ACCEPTOR_AMOUNT):
+				acceptor = multiprocessing.Process(
+					target=MPSocketAcceptor.mp_spawn,
+
+					args=(log_sched, skt_data, *args),
+					kwargs=kwargs,
+				)
+				acceptor_pool.add(acceptor)
+				acceptor.start()
+
+
+			# Maintain acceptor pool
+			while True:
+				time.sleep(self.ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S)
+				# self.nprintf('Checking acceptors...')
+
+				for acceptor_proc in tuple(acceptor_pool):
+					if acceptor_proc.is_alive():
+						continue
+
+					self.nprint('WARNING: Dead acceptor:', acceptor_proc)
+
+					# pwnt
+					acceptor_proc.kill()
+					acceptor_proc.join()
+					acceptor_pool.remove(acceptor_proc)
+					self.nprint('Joined dead acceptor')
+
+					# replace with new one
+					acceptor_proc = multiprocessing.Process(
+						target=MPSocketAcceptor.mp_spawn,
+
+						args=(log_sched, skt_data, *args),
+						kwargs=kwargs,
+					)
+					acceptor_pool.add(acceptor_proc)
+					acceptor_proc.start()
+					self.nprint('Replaced dead acceptor')
+
+				# self.nprintf('DONE checking acceptors')
 
 

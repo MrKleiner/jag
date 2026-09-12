@@ -241,6 +241,13 @@ def skt_timeout(skt, timeout, skt_files=None, timer=None):
 		th_timer.cancel()
 
 
+def bool_param(src, default):
+	if src in (True, False):
+		return src
+	else:
+		return default
+
+
 if not cyclic_xor:
 	def cyclic_xor(data, mask):
 		bt_array = bytearray(data)
@@ -450,3 +457,36 @@ class TDict:
 			)
 
 
+
+class LifeRemaining:
+	def __init__(self, max_dur_s):
+		self.lfr_dur_s = max_dur_s
+
+		self.lfr_start_time = None
+		self.lfr_started = False
+
+	@staticmethod
+	def clock_start(method):
+		def wrap(self, *args, **kwargs):
+			if not self.lfr_started:
+				self.lfr_started = True
+				self.lfr_start_time = time.monotonic()
+
+			return method(self, *args, **kwargs)
+
+		return wrap
+
+	@property
+	def life_remaining(self):
+		if not self.lfr_started:
+			raise ValueError(
+				'The clock was never started'
+			)
+
+		return max(
+			0,
+			self.lfr_dur_s - (time.monotonic() - self.lfr_start_time),
+		)
+
+	def life_extend(self, amount_s):
+		self.lfr_dur_s += amount_s
