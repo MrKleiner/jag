@@ -1179,9 +1179,14 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 			if kcas:
 				place_kcas(kcas)
 
-			cls(*args, **kwargs).run()
+			if (debug_junction := kwargs.get('debug_junction')):
+				with debug_junction:
+					self.nprint('Running with debug junction')
+					cls(*args, **kwargs).run()
+			else:
+				cls(*args, **kwargs).run()
 		except Exception as e:
-			dbg_print('--FATAL--:', e)
+			# dbg_print('--FATAL--:', e)
 			cls.nprint('FATAL:', e)
 			print_exception_framed(e)
 		finally:
@@ -1362,7 +1367,12 @@ class MPSocketAcceptor(NamedPrint):
 				place_kcas(kcas)
 				kwargs['kcas'] = kcas
 
-			acceptor = cls(*args, **kwargs).run()
+			if (debug_junction := kwargs.get('debug_junction')):
+				with debug_junction:
+					self.nprint('Running with debug junction')
+					acceptor = cls(*args, **kwargs).run()
+			else:
+				acceptor = cls(*args, **kwargs).run()
 		except Exception as e:
 			print_exception_framed(e)
 			if acceptor:
