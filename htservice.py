@@ -1,5 +1,5 @@
 """
-Simple multiprocessed HTTP server.
+Very simple multiprocessed HTTP server.
 """
 
 import threading
@@ -33,6 +33,7 @@ HSEP_STR = ': '
 
 B_KB = 1024
 B_MB = B_KB**2
+
 
 REUSEPORT_AVAILABLE = hasattr(socket, 'SO_REUSEPORT')
 
@@ -70,38 +71,6 @@ def ERR_CON_RESET():
 	return ConnectionResetError(
 		'Connection terminated.'
 	)
-
-
-class WSDebugMessagingProxy:
-	def __init__(self, ws_debug):
-		self.ws_debug = ws_debug
-
-	def announce(self, *args, **kwargs):
-		if self.ws_debug:
-			return self.ws_debug.put(
-				WSDebug.announce(*args, **kwargs)
-			)
-
-	def denounce(self, *args, **kwargs):
-		if self.ws_debug:
-			return self.ws_debug.put(
-				WSDebug.denounce(*args, **kwargs)
-			)
-
-	def fwd(self, *args, **kwargs):
-		if self.ws_debug:
-			return self.ws_debug.put(
-				WSDebug.fwd(*args, **kwargs)
-			)
-
-
-class WSDebugMessaging:
-	@property
-	def ws_dbg_msg(self):
-		return WSDebugMessagingProxy(
-			getattr(self, 'ws_debug', None)
-		)
-
 
 
 class NULL:
@@ -1131,10 +1100,48 @@ class JagSession(NamedPrint):
 
 
 
+
+
+
+
+
+class WSDebugMessagingProxy:
+	def __init__(self, ws_debug):
+		self.ws_debug = ws_debug
+
+	def announce(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.announce(*args, **kwargs)
+			)
+
+	def denounce(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.denounce(*args, **kwargs)
+			)
+
+	def fwd(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.fwd(*args, **kwargs)
+			)
+
+
+
+class WSDebugMessaging:
+	@property
+	def ws_dbg_msg(self):
+		return WSDebugMessagingProxy(
+			getattr(self, 'ws_debug', None)
+		)
+
+
+
 # No, sockets absolutely should NOT be placed in a fucking sched or anything,
 # because that's basically a fucking limbo, which is unacceptable.
 class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
-	DEFAULT_THREAD_AMOUNT = 16 * 3
+	DEFAULT_THREAD_AMOUNT = 16
 	DEFAULT_MAX_SESSIONS =  50
 
 	DEFAULT_MAX_LIFE_S =       169.000
@@ -1367,7 +1374,7 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 
 # Persistent worker
 class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
-	DEFAULT_POOL_AMOUNT = 3 * 5
+	DEFAULT_POOL_AMOUNT = 3
 	DEFAULT_SKT_CON_HARD_LIMIT = 4096
 
 	def __init__(self,
@@ -1578,7 +1585,7 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 		try:
 			pool_pipe.send(cl_con)
 			if pool_pipe.recv():
-				# cl_con.close()
+				cl_con.close()
 				return True
 			else:
 				self.remove_pool(pool_data)
@@ -1640,127 +1647,205 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 
 
 
+# Multiprocessed complex tomfoolery
+class MPNetworking(NamedPrint, WSDebugMessaging):
+	DEFAULT_ACCEPTOR_AMOUNT = 3
 
-class JagNetworking(NamedPrint):
-	DEFAULT_ACCEPTOR_AMOUNT = 3 * 5
+	# Not a parameter, because it's too low-level
 	ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S = 3.000
 
-	ELABORATE_LOGGING = True
-	WS_DEBUG = True
-	WS_DEBUG_PORT = 59173
+	# Этот скрипт КСАСа просит
+	DEFAULT_KCAS_PLACEMENT_ENABLED = True
 
-	def __init__(self, bind_addr):
+	DEFAULT_WS_DEBUG_ENABLED = False
+	DEFAULT_WS_DEBUG_PORT = 59173
+
+	def __init__(self,
+		# Address to bind to
+		bind_addr,
+
+		# HTTP request callback function
+		callback,
+
+		*args,
+
+		# How many persistent connection +acceptors to keep
+		acceptor_amount=None,
+
+		# Whether to make it so that all print statements from all the
+		# descendant processes get siphoned back into main process
+		# and scheduled for sequential execution.
+		# Prevents multi-line print statements from overlapping.
+		kcas_enabled=None,
+
+		# Server load live monitoring with websockets
+		ws_debug_enabled=None,
+		ws_debug_port=None,
+
+		**kwargs,
+	):
 		self.bind_addr = bind_addr
+		self.callback = callback
+
+		self.acceptor_amount = acceptor_amount or self.DEFAULT_ACCEPTOR_AMOUNT
+
+		self.kcas_enabled = bool_param(
+			kcas_enabled,
+			self.DEFAULT_KCAS_PLACEMENT_ENABLED,
+		)
+
+		self.ws_debug_enabled = bool_param(
+			ws_debug_enabled,
+			self.DEFAULT_WS_DEBUG_ENABLED,
+		)
+		self.ws_debug_port = ws_debug_port or self.DEFAULT_WS_DEBUG_PORT
+
+		self.acceptor_args = args
+		self.acceptor_kwargs = kwargs
+
+		self.acceptor_pool = set()
+		self.mp_mng = None
+		self.kcas = None
+		self.ws_debug = None
+		self.skt_data = None
 
 	@staticmethod
 	def logs_printer(sched):
 		while True:
-			dbg_print(
-				sched.get()
-			)
+			try:
+				while True:
+					dbg_print(
+						sched.get()
+					)
+			except Exception as e:
+				dbg_print('KCAS FATAL:', str_exception(e))
+				time.sleep(0.1)
 
-	# Create a windows socket
+	# Create an arduous socket with no SO_REUSEPORT
 	@staticmethod
-	def winskt(addr):
+	def dreary_skt(addr):
 		skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		skt.bind(addr)
-		# todo: this means Windows has no client limit
 		skt.listen(0)
 
 		return skt
 
-	def mp(self, *args, acceptor_amount=None, **kwargs):
+	def launch_kcas(self):
+		self.kcas = self.mp_mng.Queue()
+		printer_th = threading.Thread(
+			target=self.logs_printer,
+			args=(self.kcas,),
+			daemon=True
+		)
+		printer_th.start()
+		self.nprintf('Started logs printer thread')
+		place_kcas(self.kcas)
+		self.nprintf('Placed KCAS in main process')
+
+	def launch_ws_debug(self):
+		self.ws_debug = self.mp_mng.Queue()
+		WSDebug(self.ws_debug_port, self.ws_debug).run()
+
+	def create_acceptor(self):
+		acceptor_id = str(uuid.uuid4())
+		acceptor_proc = multiprocessing.Process(
+			target=MPSocketAcceptor.mp_spawn,
+
+			args=(
+				self.kcas,
+				self.skt_data,
+				self.callback,
+				*self.acceptor_args
+			),
+
+			kwargs={
+				**self.acceptor_kwargs,
+				'acceptor_id': acceptor_id,
+				'ws_debug': self.ws_debug,
+			},
+		)
+
+		acceptor_data = (acceptor_proc, acceptor_id)
+		self.acceptor_pool.add(acceptor_data)
+
+		acceptor_proc.start()
+
+		return acceptor_data
+
+	def remove_acceptor(self, acceptor_data):
+		acceptor_proc, acceptor_id = acceptor_data
+
+		acceptor_proc.kill()
+		acceptor_proc.join()
+		self.acceptor_pool.remove(acceptor_data)
+		self.nprintf('Removed acceptor', acceptor_id, acceptor_proc)
+
+		self.ws_dbg_msg.denounce(acceptor_id, {
+			'cmd_id': 'acceptor.remove',
+			'data': acceptor_id,
+		})
+
+	def run(self):
 		with multiprocessing.Manager() as mp_mng:
-			# Make print statements run sequentially
-			if self.ELABORATE_LOGGING:
-				log_sched = mp_mng.Queue()
-				printer_th = threading.Thread(
-					target=self.logs_printer,
-					args=(log_sched,),
-					daemon=True
-				)
-				printer_th.start()
-				self.nprintf('Started logs printer thread')
-				place_kcas(log_sched)
-				self.nprintf('Placed KCAS in main process')
-			else:
-				log_sched = None
+			self.mp_mng = mp_mng
+
+			# Launch a bunch of shit
+			if self.kcas_enabled:
+				self.launch_kcas()
+
+			if self.ws_debug_enabled:
+				self.launch_ws_debug()
 
 
-			# Websocket live monitoring
-			if self.WS_DEBUG:
-				ws_sched = mp_mng.Queue()
-				ws_debug = WSDebug(
-					self.WS_DEBUG_PORT,
-					ws_sched,
-				)
-				ws_debug.run()
-				time.sleep(2.5)
-				kwargs['ws_debug'] = ws_sched
-
-
-			# If no REUSEPORT available - reuse pre-made socket object
+			# Create socket data
 			if REUSEPORT_AVAILABLE:
-				skt_data = self.bind_addr
+				self.skt_data = self.bind_addr
 			else:
-				skt_data = self.winskt(self.bind_addr)
+				self.skt_data = self.dreary_skt(self.bind_addr)
 
 
-			# Create acceptor pool
-			acceptor_pool = set()
-			for _ in range(acceptor_amount or self.DEFAULT_ACCEPTOR_AMOUNT):
-				acceptor_id = str(uuid.uuid4())
-				acceptor = multiprocessing.Process(
-					target=MPSocketAcceptor.mp_spawn,
-
-					args=(log_sched, skt_data, *args),
-					kwargs={**kwargs, 'acceptor_id': acceptor_id},
-				)
-				acceptor_pool.add(
-					(acceptor, acceptor_id)
-				)
-				acceptor.start()
-
-
-			# Maintain acceptor pool
+			# Maintain acceptors
 			while True:
-				time.sleep(self.ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S)
-				# self.nprintf('Checking acceptors...')
-
-				for acceptor_proc, acceptor_id in tuple(acceptor_pool):
+				for acceptor_data in self.acceptor_pool:
+					acceptor_proc, acceptor_id = acceptor_data
 					if acceptor_proc.is_alive():
 						continue
 
-					self.nprint('WARNING: Dead acceptor:', acceptor_proc)
-
-					if ws_sched:
-						ws_sched.put(WSDebug.denounce(acceptor_id, {
-							'cmd_id': 'acceptor.remove',
-							'data': acceptor_id,
-						}))
-
-					# pwnt
-					acceptor_proc.kill()
-					acceptor_proc.join()
-					acceptor_pool.remove(acceptor_proc)
-					self.nprint('Joined dead acceptor')
-
-					# replace with new one
-					acceptor_id = str(uuid.uuid4())
-					acceptor_proc = multiprocessing.Process(
-						target=MPSocketAcceptor.mp_spawn,
-
-						args=(log_sched, skt_data, *args),
-						kwargs={**kwargs, 'acceptor_id': acceptor_id},
+					self.nprintf(
+						'WARNING: Dead acceptor:',
+						acceptor_id, acceptor_proc,
 					)
-					acceptor_pool.add(
-						(acceptor_proc, acceptor_id)
-					)
-					acceptor_proc.start()
-					self.nprint('Replaced dead acceptor')
 
-				# self.nprintf('DONE checking acceptors')
+					self.remove_acceptor(acceptor_data)
+
+					self.nprintf('Removed dead acceptor', acceptor_id)
+
+				# Make sure there's a correct amount of acceptors
+				while len(self.acceptor_pool) < self.acceptor_amount:
+					self.create_acceptor()
+
+				time.sleep(
+					self.ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S
+				)
+
+
+		# All of this shit is one-way ONLY
+		os._exit(1)
+
+
+
+class JagNetworking(NamedPrint):
+	def __init__(self, bind_addr, callback):
+		# The 2 things this basically cannot exist without
+		self.bind_addr = bind_addr
+		self.callback = callback
+
+	def mp(self, *args, **kwargs):
+		try:
+			MPNetworking(self.bind_addr, self.callback, *args, **kwargs).run()
+		except Exception as e:
+			dbg_print('FATAL:', str_exception(e))
 
 
 
