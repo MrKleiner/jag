@@ -2,3 +2,5 @@
 old_complex
 __pycache__
 /clean
+/tests
+/dev
