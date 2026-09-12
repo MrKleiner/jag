@@ -1250,14 +1250,13 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 	def timeout_callback(self):
 		self.nprintf('Timeout triggered')
 		try:
-			if self.ws_debug:
-				self.ws_debug.put(WSDebug.fwd({
-					'cmd_id': 'thread_pool.shutdown',
-					'data': {
-						'acceptor_id': self.acceptor_id,
-						'pool_id': self.pool_id,
-					},
-				}))
+			self.ws_dbg_msg.announce(f'{self.pool_id}.status', {
+				'cmd_id': 'thread_pool.shutdown',
+				'data': {
+					'acceptor_id': self.acceptor_id,
+					'pool_id': self.pool_id,
+				},
+			})
 		except Exception as e:
 			print_exception_framed(e)
 
@@ -1349,6 +1348,15 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 				.run_auto
 			)
 
+			self.ws_dbg_msg.announce(f'{self.pool_id}.session_count', {
+				'cmd_id': 'thread_pool.update_session_count',
+				'data': {
+					'acceptor_id': self.acceptor_id,
+					'pool_id': self.pool_id,
+					'counter': self.session_counter,
+				},
+			})
+
 			# Signal that everything SEEMS to have gone ok
 			self.pipe.send(True)
 
@@ -1360,7 +1368,7 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 			print_exception_framed(e)
 		finally:
 			self.nprint('Max sessions reached. Starting termination countdown')
-			self.ws_dbg_msg.fwd({
+			self.ws_dbg_msg.announce(f'{self.pool_id}.status', {
 				'cmd_id': 'thread_pool.shutdown',
 				'data': {
 					'acceptor_id': self.acceptor_id,
@@ -1585,7 +1593,7 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 		try:
 			pool_pipe.send(cl_con)
 			if pool_pipe.recv():
-				cl_con.close()
+				# cl_con.close()
 				return True
 			else:
 				self.remove_pool(pool_data)
@@ -1601,17 +1609,21 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 			cl_con, cl_addr = self.listen_skt.accept()
 			self.nprint('Accepted connection:', cl_con, cl_addr)
 
+			self.ws_dbg_msg.fwd({
+				'cmd_id': 'acceptor.got_connection',
+				'data': self.acceptor_id,
+			})
+
 			while True:
 				# See if a pool is available
 				if (pool_data := self.find_free_pool()):
 					self.nprintf('Found free pool after waiting')
 					self.assign_con(cl_con, pool_data)
 
-					if self.ws_debug:
-						self.ws_debug.put(WSDebug.fwd({
-							'cmd_id': 'acceptor.working',
-							'data': self.acceptor_id,
-						}))
+					self.ws_dbg_msg.fwd({
+						'cmd_id': 'acceptor.working',
+						'data': self.acceptor_id,
+					})
 					break
 
 				# Check if a new pool can be created. If not - wait
@@ -1624,11 +1636,10 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 								'a connection to it'
 							)
 
-							if self.ws_debug:
-								self.ws_debug.put(WSDebug.fwd({
-									'cmd_id': 'acceptor.working',
-									'data': self.acceptor_id,
-								}))
+							self.ws_dbg_msg.fwd({
+								'cmd_id': 'acceptor.working',
+								'data': self.acceptor_id,
+							})
 							break
 					else:
 						raise ValueError(
@@ -1638,11 +1649,10 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 					break
 
 				self.nprintf('Waiting for a free spot')
-				if self.ws_debug:
-					self.ws_debug.put(WSDebug.fwd({
-						'cmd_id': 'acceptor.waiting',
-						'data': self.acceptor_id,
-					}))
+				self.ws_dbg_msg.fwd({
+					'cmd_id': 'acceptor.waiting',
+					'data': self.acceptor_id,
+				})
 				time.sleep(0.250)
 
 

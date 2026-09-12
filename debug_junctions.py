@@ -117,7 +117,12 @@ class WSDebug(NamedPrint):
 					if msg.type == 'announce':
 						self.announce_data[msg.id] = msg.data
 					if msg.type == 'denounce':
-						del self.announce_data[msg.id]
+						for key in tuple(self.announce_data.keys()):
+							if key.startswith(msg.id):
+								try:
+									del self.announce_data[key]
+								except:
+									pass
 
 					for ws_cl, _ in tuple(self.ws_clients):
 						with skt_timeout(ws_cl.wskt.cl_con, 3.000):
