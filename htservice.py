@@ -10,6 +10,7 @@ import sys
 import os
 import logging
 import builtins
+import uuid
 import multiprocessing
 import logging.handlers as logging_handlers
 
@@ -20,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .jag_util import *
 from .mimes import RSP_CODE_MAP
+
+from .debug_junctions import WSDebug
 
 
 
@@ -53,10 +56,11 @@ def place_kcas(sched):
 				# '[KCAS]' + '\n' + sep.join(str(arg) for arg in args) + end
 			)
 		except Exception as e:
-			real_print(
-				'LOGGER FATAL:',
-				str_exception(e)
-			)
+			pass
+			# dbg_print(
+			# 	'LOGGER FATAL:',
+			# 	str_exception(e)
+			# )
 
 	builtins.print = impostorous_print
 
@@ -66,6 +70,37 @@ def ERR_CON_RESET():
 	return ConnectionResetError(
 		'Connection terminated.'
 	)
+
+
+class WSDebugMessagingProxy:
+	def __init__(self, ws_debug):
+		self.ws_debug = ws_debug
+
+	def announce(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.announce(*args, **kwargs)
+			)
+
+	def denounce(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.denounce(*args, **kwargs)
+			)
+
+	def fwd(self, *args, **kwargs):
+		if self.ws_debug:
+			return self.ws_debug.put(
+				WSDebug.fwd(*args, **kwargs)
+			)
+
+
+class WSDebugMessaging:
+	@property
+	def ws_dbg_msg(self):
+		return WSDebugMessagingProxy(
+			getattr(self, 'ws_debug', None)
+		)
 
 
 
@@ -1098,7 +1133,7 @@ class JagSession(NamedPrint):
 
 # No, sockets absolutely should NOT be placed in a fucking sched or anything,
 # because that's basically a fucking limbo, which is unacceptable.
-class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
+class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 	DEFAULT_THREAD_AMOUNT = 16 * 3
 	DEFAULT_MAX_SESSIONS =  50
 
@@ -1136,7 +1171,10 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 		# KCAS
 		kcas=None,
 		# WS debug junction
-		debug_junction=None,
+		ws_debug=None,
+		# For debug
+		acceptor_id=None,
+		pool_id=None,
 
 		# Params for JagSession
 		session_args=None,
@@ -1146,11 +1184,14 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 			max_life_s or self.DEFAULT_MAX_LIFE_S
 		)
 
+		self.acceptor_id = acceptor_id or '--ACCEPTOR_ID_UNKNOWN--'
+		self.pool_id = pool_id or '--POOL_ID_UNKNOWN --'
+
 		self.pipe = pipe
 		self.callback = callback
 
 		self.kcas = kcas
-		self.debug_junction = debug_junction
+		self.ws_debug = ws_debug
 
 		self.thread_amount =    thread_amount    or self.DEFAULT_THREAD_AMOUNT
 		self.max_sessions =     max_sessions     or self.DEFAULT_MAX_SESSIONS
@@ -1179,14 +1220,21 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 			if kcas:
 				place_kcas(kcas)
 
-			if (debug_junction := kwargs.get('debug_junction')):
-				with debug_junction:
-					self.nprint('Running with debug junction')
-					cls(*args, **kwargs).run()
-			else:
-				cls(*args, **kwargs).run()
+			thread_pool = cls(*args, **kwargs)
+
+			acceptor_id = kwargs.get('acceptor_id')
+			pool_id =     kwargs.get('pool_id')
+			cls.nprint('Spawned pool', f'{acceptor_id}.{pool_id}')
+			thread_pool.ws_dbg_msg.announce(pool_id, {
+				'cmd_id': 'thread_pool.create',
+				'data': {
+					'acceptor_id': acceptor_id,
+					'pool_id': pool_id,
+				}
+			})
+
+			thread_pool.run()
 		except Exception as e:
-			# dbg_print('--FATAL--:', e)
 			cls.nprint('FATAL:', e)
 			print_exception_framed(e)
 		finally:
@@ -1194,6 +1242,18 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 
 	def timeout_callback(self):
 		self.nprintf('Timeout triggered')
+		try:
+			if self.ws_debug:
+				self.ws_debug.put(WSDebug.fwd({
+					'cmd_id': 'thread_pool.shutdown',
+					'data': {
+						'acceptor_id': self.acceptor_id,
+						'pool_id': self.pool_id,
+					},
+				}))
+		except Exception as e:
+			print_exception_framed(e)
+
 		time.sleep(self.finish_timeout_s)
 		self.os_exit()
 
@@ -1227,6 +1287,14 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 					self.pipe.recv(),
 				)
 
+			self.ws_dbg_msg.fwd({
+				'cmd_id': 'thread_pool.probe',
+				'data': {
+					'acceptor_id': self.acceptor_id,
+					'pool_id': self.pool_id,
+				},
+			})
+
 			# Everything inside this should happen within milliseconds
 			with self.timeout(5.000):
 				# Whether next message is expected to be a socket
@@ -1254,6 +1322,13 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 					)
 
 			self.nprint('Received connection:', skt_con)
+			self.ws_dbg_msg.fwd({
+				'cmd_id': 'thread_pool.accept_connection',
+				'data': {
+					'acceptor_id': self.acceptor_id,
+					'pool_id': self.pool_id,
+				},
+			})
 
 			# Run the session
 			thread_pool.submit(
@@ -1277,16 +1352,22 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint):
 		except Exception as e:
 			print_exception_framed(e)
 		finally:
-			# Call timeout callback manually, because running out of
-			# session space is basically the same as life timeout
 			self.nprint('Max sessions reached. Starting termination countdown')
-			self.timeout_callback()
+			self.ws_dbg_msg.fwd({
+				'cmd_id': 'thread_pool.shutdown',
+				'data': {
+					'acceptor_id': self.acceptor_id,
+					'pool_id': self.pool_id,
+				},
+			})
+			with self.timeout(self.finish_timeout_s):
+				thread_pool.shutdown(wait=True)
 
 
 
 # Persistent worker
-class MPSocketAcceptor(NamedPrint):
-	DEFAULT_POOL_AMOUNT = 3 * 2
+class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
+	DEFAULT_POOL_AMOUNT = 3 * 5
 	DEFAULT_SKT_CON_HARD_LIMIT = 4096
 
 	def __init__(self,
@@ -1305,7 +1386,9 @@ class MPSocketAcceptor(NamedPrint):
 		# Kcas prints
 		kcas=None,
 		# WS live debug
-		debug_junction=None,
+		ws_debug=None,
+		# Debug-related
+		acceptor_id=None,
 
 		# Args for MPSocketAcceptorThreadPool
 		pool_args=None,
@@ -1334,22 +1417,24 @@ class MPSocketAcceptor(NamedPrint):
 			self.nprint(msg)
 			raise ValueError(msg)
 
+		self.acceptor_id = acceptor_id or '--ACCEPTOR_ID_UNKNOWN--'
+
 		self.skt_data = skt_data
 		self.callback = callback
 
 		self.kcas = kcas
-		self.debug_junction = debug_junction
+		self.ws_debug = ws_debug
 
 		self.pool_amount = pool_amount or self.DEFAULT_POOL_AMOUNT
 
 		self.pool_args = (callback, *tuple(pool_args or ()))
-		self.pool_kwargs = pool_kwargs or {}
-
-		self.pool_kwargs.update({
-			'session_args': tuple(session_args or ()),
+		self.pool_kwargs = {
+			**(pool_kwargs or {}),
+			'session_args':   tuple(session_args or ()),
 			'session_kwargs': dict(session_kwargs or {}),
-			'debug_junction': debug_junction.fork() if debug_junction else None,
-		})
+			'ws_debug':       ws_debug,
+			'acceptor_id':    self.acceptor_id,
+		}
 
 		self.pool_array = set()
 
@@ -1361,22 +1446,26 @@ class MPSocketAcceptor(NamedPrint):
 
 	@classmethod
 	def mp_spawn(cls, kcas, *args, **kwargs):
-		acceptor = None
 		try:
 			if kcas:
 				place_kcas(kcas)
 				kwargs['kcas'] = kcas
 
-			if (debug_junction := kwargs.get('debug_junction')):
-				with debug_junction:
-					self.nprint('Running with debug junction')
-					acceptor = cls(*args, **kwargs).run()
-			else:
-				acceptor = cls(*args, **kwargs).run()
+			acceptor = cls(*args, **kwargs)
+
+			cls.nprint('Spawned acceptor', acceptor.acceptor_id)
+			acceptor.ws_dbg_msg.announce(acceptor.acceptor_id, {
+				'cmd_id': 'acceptor.create',
+				'data': acceptor.acceptor_id,
+			})
+
+			acceptor.run()
 		except Exception as e:
 			print_exception_framed(e)
-			if acceptor:
+			try:
 				acceptor.terminate()
+			except:
+				pass
 		finally:
 			cls.os_exit()
 
@@ -1416,6 +1505,8 @@ class MPSocketAcceptor(NamedPrint):
 			self.os_exit()
 
 	def spawn_pool(self):
+		pool_id = str(uuid.uuid4())
+
 		pool_pipe_a, pool_pipe_b = multiprocessing.Pipe()
 		pool_proc = multiprocessing.Process(
 			target=MPSocketAcceptorThreadPool.mp_spawn,
@@ -1425,29 +1516,41 @@ class MPSocketAcceptor(NamedPrint):
 				pool_pipe_a,
 				*self.pool_args
 			),
-			kwargs=self.pool_kwargs,
+
+			kwargs={
+				**self.pool_kwargs,
+				'pool_id': pool_id,
+			},
 		)
 		pool_proc.start()
 
-		pool_data = (pool_proc, pool_pipe_b)
+		pool_data = (pool_proc, pool_pipe_b, pool_id)
 
 		self.pool_array.add(pool_data)
 
 		return pool_data
 
 	def remove_pool(self, pool_data):
-		pool_proc, pool_pipe = pool_data
+		pool_proc, pool_pipe, pool_id = pool_data
 		try:
 			pool_proc.kill()
 			pool_proc.join()
 			self.pool_array.remove(pool_data)
+			if self.ws_debug:
+				self.ws_debug.put(WSDebug.denounce(pool_id, {
+					'cmd_id': 'thread_pool.remove',
+					'data': {
+						'acceptor_id': self.acceptor_id,
+						'pool_id': pool_id,
+					},
+				}))
 		except Exception as e:
 			print_exception_framed(e)
 
 	def find_free_pool(self):
 		tgt_pool = None
 		for pool_data in tuple(self.pool_array):
-			pool_proc, pool_pipe = pool_data
+			pool_proc, pool_pipe, _ = pool_data
 			try:
 				if not pool_proc.is_alive():
 					self.nprintf('Found dead pool. Removing', pool_data)
@@ -1463,7 +1566,7 @@ class MPSocketAcceptor(NamedPrint):
 			except Exception as e:
 				print_exception_framed(e)
 				# Exception here means the pool is finally and officially dead
-				self.remove_pool(pool_data)
+				# self.remove_pool(pool_data)
 
 		return tgt_pool
 
@@ -1471,7 +1574,7 @@ class MPSocketAcceptor(NamedPrint):
 		return None
 
 	def assign_con(self, cl_con, pool_data):
-		pool_proc, pool_pipe = pool_data
+		pool_proc, pool_pipe, _ = pool_data
 		try:
 			pool_pipe.send(cl_con)
 			if pool_pipe.recv():
@@ -1496,6 +1599,12 @@ class MPSocketAcceptor(NamedPrint):
 				if (pool_data := self.find_free_pool()):
 					self.nprintf('Found free pool after waiting')
 					self.assign_con(cl_con, pool_data)
+
+					if self.ws_debug:
+						self.ws_debug.put(WSDebug.fwd({
+							'cmd_id': 'acceptor.working',
+							'data': self.acceptor_id,
+						}))
 					break
 
 				# Check if a new pool can be created. If not - wait
@@ -1507,6 +1616,12 @@ class MPSocketAcceptor(NamedPrint):
 								'Created a new pool and assigned '
 								'a connection to it'
 							)
+
+							if self.ws_debug:
+								self.ws_debug.put(WSDebug.fwd({
+									'cmd_id': 'acceptor.working',
+									'data': self.acceptor_id,
+								}))
 							break
 					else:
 						raise ValueError(
@@ -1516,17 +1631,23 @@ class MPSocketAcceptor(NamedPrint):
 					break
 
 				self.nprintf('Waiting for a free spot')
+				if self.ws_debug:
+					self.ws_debug.put(WSDebug.fwd({
+						'cmd_id': 'acceptor.waiting',
+						'data': self.acceptor_id,
+					}))
 				time.sleep(0.250)
 
 
 
 
 class JagNetworking(NamedPrint):
-	DEFAULT_ACCEPTOR_AMOUNT = 3 * 2
+	DEFAULT_ACCEPTOR_AMOUNT = 3 * 5
 	ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S = 3.000
 
 	ELABORATE_LOGGING = True
-	WS_DEBUG = False
+	WS_DEBUG = True
+	WS_DEBUG_PORT = 59173
 
 	def __init__(self, bind_addr):
 		self.bind_addr = bind_addr
@@ -1569,11 +1690,14 @@ class JagNetworking(NamedPrint):
 
 			# Websocket live monitoring
 			if self.WS_DEBUG:
-				debug_junction = DebugJunction()
-				debug_junction.run()
-				kwargs['debug_junction'] = debug_junction.fork()
-			else:
-				debug_junction = None
+				ws_sched = mp_mng.Queue()
+				ws_debug = WSDebug(
+					self.WS_DEBUG_PORT,
+					ws_sched,
+				)
+				ws_debug.run()
+				time.sleep(2.5)
+				kwargs['ws_debug'] = ws_sched
 
 
 			# If no REUSEPORT available - reuse pre-made socket object
@@ -1586,13 +1710,16 @@ class JagNetworking(NamedPrint):
 			# Create acceptor pool
 			acceptor_pool = set()
 			for _ in range(acceptor_amount or self.DEFAULT_ACCEPTOR_AMOUNT):
+				acceptor_id = str(uuid.uuid4())
 				acceptor = multiprocessing.Process(
 					target=MPSocketAcceptor.mp_spawn,
 
 					args=(log_sched, skt_data, *args),
-					kwargs=kwargs,
+					kwargs={**kwargs, 'acceptor_id': acceptor_id},
 				)
-				acceptor_pool.add(acceptor)
+				acceptor_pool.add(
+					(acceptor, acceptor_id)
+				)
 				acceptor.start()
 
 
@@ -1601,11 +1728,17 @@ class JagNetworking(NamedPrint):
 				time.sleep(self.ACCEPTOR_MGE_STATUS_CHECK_INTERVAL_S)
 				# self.nprintf('Checking acceptors...')
 
-				for acceptor_proc in tuple(acceptor_pool):
+				for acceptor_proc, acceptor_id in tuple(acceptor_pool):
 					if acceptor_proc.is_alive():
 						continue
 
 					self.nprint('WARNING: Dead acceptor:', acceptor_proc)
+
+					if ws_sched:
+						ws_sched.put(WSDebug.denounce(acceptor_id, {
+							'cmd_id': 'acceptor.remove',
+							'data': acceptor_id,
+						}))
 
 					# pwnt
 					acceptor_proc.kill()
@@ -1614,16 +1747,23 @@ class JagNetworking(NamedPrint):
 					self.nprint('Joined dead acceptor')
 
 					# replace with new one
+					acceptor_id = str(uuid.uuid4())
 					acceptor_proc = multiprocessing.Process(
 						target=MPSocketAcceptor.mp_spawn,
 
 						args=(log_sched, skt_data, *args),
-						kwargs=kwargs,
+						kwargs={**kwargs, 'acceptor_id': acceptor_id},
 					)
-					acceptor_pool.add(acceptor_proc)
+					acceptor_pool.add(
+						(acceptor_proc, acceptor_id)
+					)
 					acceptor_proc.start()
 					self.nprint('Replaced dead acceptor')
 
 				# self.nprintf('DONE checking acceptors')
+
+
+
+
 
 
