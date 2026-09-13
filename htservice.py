@@ -1387,7 +1387,7 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 						'reason': 'all_done',
 					},
 				})
-				time.sleep(2)
+				# time.sleep(2)
 
 
 
