@@ -1255,6 +1255,7 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 				'data': {
 					'acceptor_id': self.acceptor_id,
 					'pool_id': self.pool_id,
+					'reason': 'timeout',
 				},
 			})
 		except Exception as e:
@@ -1373,10 +1374,20 @@ class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 				'data': {
 					'acceptor_id': self.acceptor_id,
 					'pool_id': self.pool_id,
+					'reason': 'max_sessions',
 				},
 			})
 			with self.timeout(self.finish_timeout_s):
 				thread_pool.shutdown(wait=True)
+				self.ws_dbg_msg.announce(f'{self.pool_id}.status', {
+					'cmd_id': 'thread_pool.shutdown',
+					'data': {
+						'acceptor_id': self.acceptor_id,
+						'pool_id': self.pool_id,
+						'reason': 'all_done',
+					},
+				})
+				time.sleep(2)
 
 
 
@@ -1857,7 +1868,8 @@ class JagNetworking(NamedPrint):
 		except Exception as e:
 			dbg_print('FATAL:', str_exception(e))
 
-
+	def threaded(self, *args, **kwargs):
+		pass
 
 
 
