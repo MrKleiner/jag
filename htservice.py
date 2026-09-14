@@ -410,7 +410,7 @@ class ChunkedStream:
 	def send(self, data):
 		# Send the chunk size
 		self.skt_raw.sendall(
-			hex(len(data)).lstrip('0x').encode() + RN_BYTES
+			format(len(data), 'x').encode() + RN_BYTES
 		)
 		# Send the chunk itself
 		self.skt_raw.sendall(data)
@@ -866,7 +866,7 @@ class JagRequest(NamedPrint):
 		while (data_chunk := data_stream.read(chunk_size)):
 			if len(buf) >= max_len:
 				raise JagErrCode(
-					f'Payload of length {content_len} '
+					f'Payload of length {len(buf)} '
 					f'exceeds the limit of {max_len}.',
 					code=413
 				)
@@ -886,7 +886,7 @@ class JagSession(NamedPrint):
 	DEFAULT_RECV_HEADERS_TIMEOUT_S = 10.000
 
 	# Whether to dump error traceback to clients when a fatal error occurs
-	DEFAULT_SHOW_ERR_TRACEBACK = True
+	DEFAULT_SHOW_ERR_TRACEBACK = False
 
 	def __init__(self,
 		skt_raw,
@@ -986,7 +986,7 @@ class JagSession(NamedPrint):
 					msg = str_exception(err)
 
 				err_reply.send_bytes(
-					str(msg or 'FATAL').encode(),
+					str(msg or 'JAG FATAL').encode(),
 					'text/plain',
 				)
 		except Exception as e:
@@ -1045,7 +1045,7 @@ class JagSession(NamedPrint):
 				)
 				reply.headers['connection'] = 'Close'
 
-			timer = threading.Timer(
+			timer = (self.better_timer or threading.Timer)(
 				self.life_remaining(start_s),
 				edit_headers,
 			)
@@ -1093,8 +1093,13 @@ class JagSession(NamedPrint):
 		self.nprintf('Exited')
 
 	def run_auto(self):
-		for _ in self.run():
-			continue
+		try:
+			for _ in self.run():
+				continue
+		except Exception as e:
+			print_exception_framed(e)
+			self.terminate()
+			raise e
 
 
 
@@ -1520,7 +1525,7 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 
 	def terminate(self):
 		try:
-			for pool_proc, _ in tuple(self.pool_array):
+			for pool_proc, _, _ in tuple(self.pool_array):
 				try:
 					pool_proc.kill()
 				except Exception as e:
@@ -1591,13 +1596,8 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 						tgt_pool = pool_data
 			except Exception as e:
 				print_exception_framed(e)
-				# Exception here means the pool is finally and officially dead
-				# self.remove_pool(pool_data)
 
 		return tgt_pool
-
-		self.nprintf('Could not find free pool')
-		return None
 
 	def assign_con(self, cl_con, pool_data):
 		pool_proc, pool_pipe, _ = pool_data
@@ -1629,19 +1629,25 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 				# See if a pool is available
 				if (pool_data := self.find_free_pool()):
 					self.nprintf('Found free pool after waiting')
-					self.assign_con(cl_con, pool_data)
-
-					self.ws_dbg_msg.fwd({
-						'cmd_id': 'acceptor.working',
-						'data': self.acceptor_id,
-					})
-					break
+					if self.assign_con(cl_con, pool_data):
+						self.ws_dbg_msg.fwd({
+							'cmd_id': 'acceptor.working',
+							'data': self.acceptor_id,
+						})
+						break
 
 				# Check if a new pool can be created. If not - wait
 				if len(self.pool_array) < self.pool_amount:
-					for _ in range(3):
+					for _ in range(4):
 						self.spawn_pool()
-						if self.assign_con(cl_con, self.find_free_pool()):
+						if not (pool_data := self.find_free_pool()):
+							self.nprintf(
+								'WARNING: Pool created, but not '
+								'immediately available.'
+							)
+							continue
+
+						if self.assign_con(cl_con, pool_data):
 							self.nprintf(
 								'Created a new pool and assigned '
 								'a connection to it'
@@ -1828,7 +1834,7 @@ class MPNetworking(NamedPrint, WSDebugMessaging):
 
 			# Maintain acceptors
 			while True:
-				for acceptor_data in self.acceptor_pool:
+				for acceptor_data in tuple(self.acceptor_pool):
 					acceptor_proc, acceptor_id = acceptor_data
 					if acceptor_proc.is_alive():
 						continue
