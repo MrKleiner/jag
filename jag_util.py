@@ -14,8 +14,6 @@ except ImportError:
 	cyclic_xor = None
 
 
-RECV_BUF_FLOOR = 512
-
 
 
 
@@ -152,7 +150,6 @@ def clamp_num(num, tgt_min, tgt_max):
 
 
 def aligned_recv(skt_con, bufsize, chunk_size=8192):
-	# Shouldn't this print a warning or something ?
 	if bufsize <= 0:
 		return b''
 
@@ -161,9 +158,8 @@ def aligned_recv(skt_con, bufsize, chunk_size=8192):
 	# Through tests it was determined that there's no need to
 	# create a buffer for receiving less than 512 bytes.
 	# todo: Lower the number a little bit just to be sure?
-	if bufsize < RECV_BUF_FLOOR:
+	if bufsize < 512:
 		buf = b''
-		# print('Need to receive:', bufsize)
 		while True:
 			# todo: raise a warning when the result is actually longer
 			# than anticipated
@@ -192,10 +188,6 @@ def aligned_recv(skt_con, bufsize, chunk_size=8192):
 				raise ConnectionError('Connection closed')
 
 			buf.write(data)
-
-		buf = buf.getvalue()
-
-	return buf
 
 
 def terminate_skt(skt, skt_files=None):
