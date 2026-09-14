@@ -13,8 +13,7 @@ from multiprocessing.connection import Listener as MPListener
 from multiprocessing.connection import Client as MPClient
 from concurrent.futures import ThreadPoolExecutor
 
-from jag.min_wss import MinWSession
-from jag.jag_util import (
+from .jag_util import (
 	print_exception_framed,
 	skt_timeout,
 	terminate_skt,
@@ -22,7 +21,6 @@ from jag.jag_util import (
 	ClassDict,
 	FasterTimerSched,
 )
-from jag import htservice
 
 
 THISDIR = Path(__file__).parent
@@ -143,6 +141,9 @@ class WSDebug(NamedPrint):
 			return
 
 	def ws_listen(self):
+		# important todo: this is fucking stupid
+		from .min_wss import MinWSession
+
 		while True:
 			try:
 				cl_con, _ = self.ws_listener.accept()
@@ -169,6 +170,9 @@ class WSDebug(NamedPrint):
 				continue
 
 	def serve_page(self):
+		# important todo: this is fucking stupid
+		from .htservice import JagSession
+
 		# Threads
 		thread_pool = ThreadPoolExecutor(max_workers=16)
 
@@ -204,7 +208,7 @@ class WSDebug(NamedPrint):
 				cl_con, cl_addr = skt.accept()
 
 				thread_pool.submit(
-					htservice.JagSession(
+					JagSession(
 						cl_con,
 						callback,
 

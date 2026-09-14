@@ -8,7 +8,13 @@ import socket
 
 
 from .jag_util import *
+from .htservice import (
+	JagRequest,
+	JagReply,
 
+	JagHeaders,
+	JagQuery,
+)
 
 
 class WebSocketXORMask:
@@ -24,10 +30,6 @@ class WebSocketXORMask:
 
 
 class MinWSession:
-	# Don't read incoming message into io.Bytes()
-	# if it's smaller than this
-	RECV_BUF_FLOOR = 512
-
 	def __init__(self, cl_con, resolve_immediately=True):
 		self.cl_con = cl_con
 
@@ -63,44 +65,40 @@ class MinWSession:
 
 	@check_handshake(False)
 	def resolve_handshake(self):
-		skt_file = self.cl_con.makefile('rb', newline=b'\r\n', buffering=0)
-		hlist = []
-		while True:
-			line = skt_file.readline()
-			if not line or line == b'\r\n':
-				break
-			hlist.append(line.decode().strip())
-		skt_file.close()
+		skt_rfile = self.cl_con.makefile(
+			'rb', newline=b'\r\n', buffering=0
+		)
 
-		hshake_info = {}
-		for ln in hlist:
-			splitline = ln.split(': ')
-			hshake_info[splitline[0].strip().lower()] = ': '.join(splitline[1:]).strip()
+		jag_req = JagRequest(
+			skt_rfile,
 
-		# construct a response
-		resolve = {
-			'Upgrade':    'websocket',
-			'Connection': 'Upgrade',
-		}
+			JagQuery.from_skt(skt_rfile),
+			JagHeaders.from_skt(skt_rfile),
+		)
 
-		if 'sec-websocket-key' in hshake_info:
-			self.input_wss_key = hshake_info['sec-websocket-key']
-			self.output_wss_key = hashlib.sha1(
-				(hshake_info['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()
+		skt_rfile.close()
+
+		jag_reply = JagReply(self.cl_con, JagHeaders({
+			'Upgrade':    ('websocket',),
+			'Connection': ('Upgrade',),
+
+			'Sec-WebSocket-Accept': (
+				base64.b64encode(
+					hashlib.sha1(
+						''.join((
+							jag_req.headers['sec-websocket-key'],
+							'258EAFA5-E914-47DA-95CA-C5AB0DC85B11',
+						))
+						.encode()
+					)
+					.digest()
+				)
+				.decode(),
 			)
-			# important todo: is this magic string actually important ?
-			# aka could it be any other string ?
-			resolve['Sec-WebSocket-Accept'] = (
-				base64.b64encode(self.output_wss_key.digest())
-				.decode()
-			)
+		}))
 
-		self.cl_con.sendall(b'HTTP/1.1 101 Switching Protocols\r\n')
-		for key in resolve:
-			self.cl_con.sendall(
-				f"""{key}: {resolve[key]}\r\n""".encode()
-			)
-		self.cl_con.sendall(b'\r\n')
+		jag_reply.rsp_code = 101
+		jag_reply.send_headers()
 
 		self.hshake_resolved = True
 
