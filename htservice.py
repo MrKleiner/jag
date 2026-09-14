@@ -877,7 +877,7 @@ class JagRequest(NamedPrint):
 
 
 
-class JagSession(NamedPrint):
+class JagSession(LifeRemaining, NamedPrint):
 	DEFAULT_MAX_REQUESTS = 100
 	DEFAULT_LIFE_DUR_S = 85.000
 
@@ -906,6 +906,10 @@ class JagSession(NamedPrint):
 
 		better_timer=None,
 	):
+		super().__init__(
+			life_dur_s or self.DEFAULT_LIFE_DUR_S
+		)
+
 		self.skt_raw = skt_raw
 		self.callback = callback
 		self.better_timer = better_timer
@@ -915,7 +919,6 @@ class JagSession(NamedPrint):
 		self.add_headers = add_headers
 
 		self.max_requests =           max_requests           or self.DEFAULT_MAX_REQUESTS
-		self.life_dur_s =             life_dur_s             or self.DEFAULT_LIFE_DUR_S
 		self.recv_headers_timeout_s = recv_headers_timeout_s or self.DEFAULT_RECV_HEADERS_TIMEOUT_S
 
 		self.query_size_limit = query_size_limit
@@ -957,16 +960,6 @@ class JagSession(NamedPrint):
 			(self._skt_rfile,)
 		)
 
-	def life_remaining(self, start):
-		result = max(
-			0,
-			self.life_dur_s - (time.monotonic() - start),
-		)
-
-		self.nprint('Life remaining:', result)
-
-		return result
-
 	def spawn_reply(self):
 		reply = JagReply(self.skt_raw)
 
@@ -992,16 +985,15 @@ class JagSession(NamedPrint):
 		except Exception as e:
 			print_exception_framed(e)
 
+	@LifeRemaining.clock_start
 	def run(self):
-		start_s = time.monotonic()
-
-		while (self.remaining_requests > 0) and self.life_remaining(start_s):
+		while (self.remaining_requests > 0) and self.life_remaining:
 			self.nprint(
 				f'Awaiting request. Will serve {self.remaining_requests} more'
 			)
 			self.remaining_requests -= 1
 
-			with self.skt_timeout(self.life_remaining(start_s)):
+			with self.skt_timeout(self.life_remaining):
 				query = JagQuery.from_skt(
 					self.skt_rfile,
 					size_limit=self.query_size_limit,
@@ -1045,12 +1037,16 @@ class JagSession(NamedPrint):
 				)
 				reply.headers['connection'] = 'Close'
 
-			timer = (self.better_timer or threading.Timer)(
-				self.life_remaining(start_s),
-				edit_headers,
-			)
+			if self.life_remaining > 0.075:
+				timer = (self.better_timer or threading.Timer)(
+					self.life_remaining,
+					edit_headers,
+				)
 
-			timer.start()
+				timer.start()
+			else:
+				self.lfr_dur_s = 0
+				edit_headers()
 
 			try:
 				yield req, reply
@@ -1874,9 +1870,49 @@ class JagNetworking(NamedPrint):
 		except Exception as e:
 			dbg_print('FATAL:', str_exception(e))
 
-	def threaded(self, *args, **kwargs):
-		pass
+	def threaded(self,
+		*args,
+		max_workers=None,
+		con_hard_limit=None,
+		use_better_timers=True,
 
+		# Everything else is session config
+		**kwargs,
+	):
+		skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		if REUSEPORT_AVAILABLE:
+			skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+		skt.bind(self.bind_addr)
+		skt.listen(con_hard_limit or 337)
 
+		thread_pool = ThreadPoolExecutor(
+			max_workers=max_workers or 37
+		)
+
+		if use_better_timers:
+			timer_sched = FasterTimerSched()
+			kwargs['better_timer'] = timer_sched.timer
+
+		while True:
+			try:
+				cl_con, cl_addr = skt.accept()
+				self.nprintf('Got connection:', cl_con)
+			except Exception as e:
+				print_exception_framed(e)
+				time.sleep(0.1)
+				continue
+
+			thread_pool.submit(
+				JagSession(
+					cl_con,
+					self.callback,
+
+					**kwargs,
+				)
+				.run_auto
+			)
+
+		thread_pool.shutdown(wait=True)
 
 

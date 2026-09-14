@@ -420,7 +420,7 @@ class FasterTimerSched:
 				try:
 					timer.function(*timer.args, **timer.kwargs)
 				except Exception:
-					import traceback
+					# import traceback
 					traceback.print_exc()
 
 
@@ -490,3 +490,5 @@ class LifeRemaining:
 
 	def life_extend(self, amount_s):
 		self.lfr_dur_s += amount_s
+
+

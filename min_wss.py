@@ -218,11 +218,7 @@ class MinWSession:
 		)
 
 	def terminate(self):
-		try:
-			self.cl_con.shutdown(socket.SHUT_RDWR)
-			self.cl_con.close()
-		except:
-			pass
+		terminate_skt(self.cl_con)
 
 
 
