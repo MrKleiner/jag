@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>JAG Debug</title>
+	</head>
+
+	<body ws_port="%WS_PORT%"></body>
+
+	<style type="text/css">
+		*{
+			padding: 0px;
+			margin: 0px;
+			font-family: monospace;
+			color: #9E9E9E;
+			font-size: 10px;
+		}
+
+		body{
+			background: black;
+			display: flex;
+			flex-direction: row;
+		}
+
+		.acceptor{
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			margin: 10px;
+			padding: 5px;
+			border-radius: 5px;
+			outline: 1px solid gray;
+
+			width: 220px;
+		}
+
+		.pool{
+			display: flex;
+			flex-direction: column;
+			width: 100%;
+			height: 50px;
+			background: rgba(255, 255, 255, 0.1);
+			border-radius: 5px;
+			align-items: center;
+			text-align: center;
+			margin-top: 10px;
+			white-space: pre;
+		}
+
+		.pool.del_mark{
+			/*background: #541B1F;*/
+		}
+
+		.pool.warning{
+			outline: 5px solid #FFC000 !important;
+		}
+
+		.acceptor.waiting{
+			outline: 2px solid #F2D666;
+		}
+	</style>
+
+	<script type="text/javascript">
+		const probeAnimKeyframes = Object.freeze([
+			{background: '#4C55AB', boxShadow: '0px 0px 24px 8px #6BCDFF'},
+			{background: null,      boxShadow: '0px 0px 0px 0px #3DA6FF'},
+		]);
+
+		const poolShutdownAnim = Object.freeze([
+			{background: '#FF7878', boxShadow: '0px 0px 24px 8px #FF9E9E'},
+			{background: '#541B1F', boxShadow: '0px 0px 0px 0px #FF9E9E'},
+		]);
+
+		const poolShutdownMaxSessionsAnim = Object.freeze([
+			{background: '#F478FF', boxShadow: '0px 0px 24px 8px #FE9EFF'},
+			{background: '#431B54', boxShadow: '0px 0px 0px 0px #E59EFF'},
+		]);
+
+		const poolShutdownAllDoneAnim = Object.freeze([
+			{background: '#78FF98', boxShadow: '0px 0px 24px 8px #9EFFC3'},
+			{background: '#1B5427', boxShadow: '0px 0px 0px 0px #9EFFAE'},
+		]);
+
+		const poolAcceptConnectionAnim = Object.freeze([
+			{outline: '4px solid lime'},
+			{outline: '0px solid black'},
+		]);
+
+		const acceptorGotConnectionAnim = Object.freeze([
+			{boxShadow: '0px 0px 24px 8px #BABABA'},
+			{boxShadow: '0px 0px 0px 0px black'},
+		]);
+
+		const flashAnimOptions = {
+			duration:   200,
+			iterations: 1,
+			fill:       'forwards',
+			easing:     'cubic-bezier(0.33, 1, 0.68, 1)',
+		};
+
+
+		const acceptorMap = {};
+		const poolMap = {};
+
+		window.debug = [acceptorMap, poolMap];
+
+
+		const createAcceptor = function(acceptorID){
+			if (acceptorID in acceptorMap){
+				return acceptorMap[acceptorID]
+			}
+
+			const acceptorDOM = document.createElement('div');
+			acceptorDOM.classList.add('acceptor');
+			acceptorDOM.textContent = acceptorID;
+			acceptorMap[acceptorID] = acceptorDOM;
+
+			document.body.append(acceptorDOM);
+
+			return acceptorDOM
+		}
+
+		const createPool = function(acceptorID, poolID){
+			if (poolID in poolMap){
+				return poolMap[poolID]
+			}
+			const acceptorDOM = createAcceptor(acceptorID);
+
+			const poolDOM = document.createElement('div');
+			poolDOM.classList.add('pool');
+			poolDOM.textContent = poolID;
+			poolMap[poolID] = poolDOM;
+
+			acceptorDOM.append(poolDOM);
+
+			setTimeout(function(){
+				poolDOM.classList.add('warning');
+			}, 180_000)
+
+			return poolDOM
+		}
+
+		const removePool = function(poolID){
+			const pool = poolMap[poolID]
+			if (pool){
+				poolMap[poolID].remove();
+				delete poolMap[poolID];
+			}
+		}
+
+		const probePool = function(acceptorID, poolID){
+			createPool(acceptorID, poolID)
+			.animate(probeAnimKeyframes, flashAnimOptions)
+			.play();
+		}
+
+		const poolShutdown = function(acceptorID, poolID, reason){
+			const pool = createPool(acceptorID, poolID);
+
+			if (reason == 'max_sessions'){
+				pool.animate(poolShutdownMaxSessionsAnim, flashAnimOptions).play();
+				return
+			}
+
+			if (reason == 'all_done'){
+				pool.animate(poolShutdownAllDoneAnim, flashAnimOptions).play();
+				return
+			}
+
+			pool.animate(poolShutdownAnim, flashAnimOptions).play();
+			
+		}
+
+		const poolAcceptConnection = function(acceptorID, poolID){
+			createPool(acceptorID, poolID)
+			.animate(poolAcceptConnectionAnim, flashAnimOptions)
+			.play();
+		}
+
+		const acceptorWaiting = function(acceptorID){
+			createAcceptor(acceptorID)
+			.classList.add('waiting')
+		}
+
+		const acceptorWorking = function(acceptorID){
+			createAcceptor(acceptorID)
+			.classList.remove('waiting')
+		}
+
+		const updatePoolSessionCount = function(acceptorID, poolID, counter){
+			createPool(acceptorID, poolID).textContent = poolID + '\n' + counter;
+		}
+
+		const acceptorGotConnection = function(acceptorID){
+			createAcceptor(acceptorID)
+			.animate(acceptorGotConnectionAnim, flashAnimOptions)
+			.play();
+		}
+
+
+
+		const sleep = function(sleepDuration){
+			return new Promise(function(resolve, _){
+				setTimeout(resolve, sleepDuration);
+			})
+		}
+
+		const ws = new WebSocket(
+			'ws://' + window.location.hostname + ':' + document.body.getAttribute('ws_port')
+		);
+
+		ws.addEventListener('open', async function(){
+			console.log('Opened Websocket');
+			while (true){
+				await sleep(2500);
+				ws.send('ping');
+			}
+		})
+
+		ws.addEventListener('message', async function(event){
+			const msg = JSON.parse(
+				await event.data.text()
+			);
+
+			// console.log(msg);
+
+			if (msg.cmd_id == 'acceptor.create'){
+				createAcceptor(msg.data);
+			}
+			if (msg.cmd_id == 'thread_pool.create'){
+				createPool(
+					msg.data.acceptor_id,
+					msg.data.pool_id,
+				);
+			}
+			if (msg.cmd_id == 'thread_pool.remove'){
+				removePool(
+					msg.data.pool_id,
+				);
+			}
+			if (msg.cmd_id == 'thread_pool.probe'){
+				probePool(
+					msg.data.acceptor_id,
+					msg.data.pool_id,
+				);
+			}
+			if (msg.cmd_id == 'thread_pool.shutdown'){
+				poolShutdown(
+					msg.data.acceptor_id,
+					msg.data.pool_id,
+					msg.data.reason,
+				);
+			}
+			if (msg.cmd_id == 'thread_pool.accept_connection'){
+				poolAcceptConnection(
+					msg.data.acceptor_id,
+					msg.data.pool_id,
+				);
+			}
+			if (msg.cmd_id == 'thread_pool.update_session_count'){
+				updatePoolSessionCount(
+					msg.data.acceptor_id,
+					msg.data.pool_id,
+					msg.data.counter,
+				);
+			}
+			if (msg.cmd_id == 'acceptor.waiting'){
+				acceptorWaiting(msg.data);
+			}
+			if (msg.cmd_id == 'acceptor.working'){
+				acceptorWorking(msg.data);
+			}
+			if (msg.cmd_id == 'acceptor.got_connection'){
+				acceptorGotConnection(msg.data);
+			}
+		});
+	</script>
+
+</html>

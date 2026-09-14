@@ -408,6 +408,9 @@ class ChunkedStream:
 		self.skt_raw.sendall(b'0' + RN_BYTES + RN_BYTES)
 
 	def send(self, data):
+		if not data:
+			return
+
 		# Send the chunk size
 		self.skt_raw.sendall(
 			format(len(data), 'x').encode() + RN_BYTES

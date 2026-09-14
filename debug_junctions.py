@@ -190,7 +190,7 @@ class WSDebug(NamedPrint):
 		# Basic callback
 		def callback(req, reply):
 			reply.send_bytes(
-				Path('E:/!webdesign/jag/tests/networking_debug.html')
+				(THISDIR / 'networking_debug.html')
 				.read_bytes()
 				.replace(
 					b'%WS_PORT%',

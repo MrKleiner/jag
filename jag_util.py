@@ -314,12 +314,14 @@ class NamedPrint:
 				cls.nprint()
 				return
 
-			cls.nprint(lines[0][0:100])
+			print(
+				'\n'.join(
+					f'[{NPrintData.apply(cls.__name__)}][C] {ln[0:100]}'
+					for ln in lines
+				),
 
-			del lines[0]
-
-			for line in lines:
-				print(line[0:100])
+				**kwargs,
+			)
 
 
 
