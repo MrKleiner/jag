@@ -4,7 +4,6 @@ import struct
 import io
 import collections
 import json
-import socket
 
 
 from .jag_util import *
@@ -15,6 +14,7 @@ from .htservice import (
 	JagHeaders,
 	JagQuery,
 )
+
 
 
 class WebSocketXORMask:
@@ -63,6 +63,37 @@ class MinWSession:
 			self.cl_con, *args, **kwargs
 		)
 
+	def eval_length(self, data, strip_mask=True):
+		"""
+		Evaluate payload length from received bytes.
+		- data:bytes|int
+			- bytes: Evaluate int FROM bytes
+					 Unpacking size is determined automatically
+					 from the amount of bytes passed.
+			- int: Evaluate int TO bytes
+		- strip_mask:bool
+			Strip first bit of the data.
+			Only works if data is isntance of int
+		"""
+		length = None
+		if isinstance(data, bytes):
+			if len(data) == 1:
+				data_unpack = struct.unpack('!B', data)[0]
+				if strip_mask:
+					data_unpack = data_unpack & 0b01111111
+				length = data_unpack
+			elif len(data) == 2:
+				length = struct.unpack('!H', data)[0]
+			else:
+				length = struct.unpack('!Q', data)[0]
+
+			return length
+
+		if isinstance(data, int):
+			if strip_mask:
+				data = data & 0b01111111
+			return data
+
 	@check_handshake(False)
 	def resolve_handshake(self):
 		skt_rfile = self.cl_con.makefile(
@@ -102,37 +133,6 @@ class MinWSession:
 
 		self.hshake_resolved = True
 
-	def eval_length(self, data, strip_mask=True):
-		"""
-		Evaluate payload length from received bytes.
-		- data:bytes|int
-			- bytes: Evaluate int FROM bytes
-					 Unpacking size is determined automatically
-					 from the amount of bytes passed.
-			- int: Evaluate int TO bytes
-		- strip_mask:bool
-			Strip first bit of the data.
-			Only works if data is isntance of int
-		"""
-		length = None
-		if isinstance(data, bytes):
-			if len(data) == 1:
-				data_unpack = struct.unpack('!B', data)[0]
-				if strip_mask:
-					data_unpack = data_unpack & 0b01111111
-				length = data_unpack
-			elif len(data) == 2:
-				length = struct.unpack('!H', data)[0]
-			else:
-				length = struct.unpack('!Q', data)[0]
-
-			return length
-
-		if isinstance(data, int):
-			if strip_mask:
-				data = data & 0b01111111
-			return data
-
 	@check_handshake(True)
 	def recv_message(self):
 		msg_buf = io.BytesIO()
@@ -163,13 +163,9 @@ class MinWSession:
 				frame_len = self.eval_length(self.aligned_recv(8))
 
 			if masked:
-				wss_mask = WebSocketXORMask(
-					self.aligned_recv(4)
-				)
-
-			if masked:
 				msg_buf.write(
-					wss_mask.apply(self.aligned_recv(frame_len))
+					WebSocketXORMask(self.aligned_recv(4))
+					.apply(self.aligned_recv(frame_len))
 				)
 			else:
 				msg_buf.write(self.aligned_recv(frame_len))
@@ -185,7 +181,7 @@ class MinWSession:
 		head1 = (
 			# FIN bit. 1 = fin, 0 = continue
 			   0b10000000
-			# Useless shit (poor documentation + not supported by browsers)
+			# Useless shit
 			| (0b01000000 if False else 0)
 			| (0b00100000 if False else 0)
 			| (0b00010000 if False else 0)
