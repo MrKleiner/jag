@@ -110,8 +110,8 @@ class MinWSession:
 		skt_rfile.close()
 
 		jag_reply = JagReply(self.cl_con, JagHeaders({
-			'Upgrade':    ('websocket',),
-			'Connection': ('Upgrade',),
+			'Upgrade':    ('websocket', ),
+			'Connection': ('Upgrade',   ),
 
 			'Sec-WebSocket-Accept': (
 				base64.b64encode(
@@ -151,7 +151,7 @@ class MinWSession:
 			rsv1 =   True if bits1 & 0b01000000 else False
 			rsv2 =   True if bits1 & 0b00100000 else False
 			rsv3 =   True if bits1 & 0b00010000 else False
-			opcode = bits1 & 0b00001111
+			opcode =         bits1 & 0b00001111
 
 			masked = True if bits2 & 0b10000000 else False
 
@@ -159,7 +159,7 @@ class MinWSession:
 
 			if frame_len == 126:
 				frame_len = self.eval_length(self.aligned_recv(2))
-			elif frame_len == 127:
+			if frame_len == 127:
 				frame_len = self.eval_length(self.aligned_recv(8))
 
 			if masked:

@@ -88,6 +88,8 @@ class JagErrCode(Exception):
 
 
 class JagHeaders(NamedPrint):
+	NPRINT_DISABLED = True
+
 	DEFAULT_HBUF_SIZE_LIMIT = 1024 * 256
 
 	def __init__(self, hdict):
@@ -555,6 +557,8 @@ class ByteRange(NamedPrint):
 
 
 class JagReply(NamedPrint):
+	NPRINT_DISABLED = True
+
 	def __init__(self,
 		skt_raw,
 		headers=None,
@@ -709,6 +713,8 @@ class JagReply(NamedPrint):
 
 
 class JagRequest(NamedPrint):
+	NPRINT_DISABLED = True
+
 	def __init__(self,
 		skt_rfile,
 
@@ -1471,6 +1477,8 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 
 		self._listen_skt = None
 
+		self.th_lock = threading.Lock()
+
 	@staticmethod
 	def os_exit():
 		os._exit(1)
@@ -1535,6 +1543,17 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 		finally:
 			self.os_exit()
 
+	def joiner(self):
+		while True:
+			try:
+				time.sleep(3.000)
+				for pool_data in tuple(self.pool_array):
+					pool_proc, _, _ = pool_data
+					if not pool_proc.is_alive():
+						self.remove_pool(pool_data)
+			except Exception as e:
+				print_exception_framed(e)
+
 	def spawn_pool(self):
 		pool_id = str(uuid.uuid4())
 
@@ -1562,21 +1581,22 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 		return pool_data
 
 	def remove_pool(self, pool_data):
-		pool_proc, pool_pipe, pool_id = pool_data
-		try:
-			pool_proc.kill()
-			pool_proc.join()
-			self.pool_array.remove(pool_data)
-			if self.ws_debug:
-				self.ws_debug.put(WSDebug.denounce(pool_id, {
-					'cmd_id': 'thread_pool.remove',
-					'data': {
-						'acceptor_id': self.acceptor_id,
-						'pool_id': pool_id,
-					},
-				}))
-		except Exception as e:
-			print_exception_framed(e)
+		with self.th_lock:
+			pool_proc, pool_pipe, pool_id = pool_data
+			try:
+				pool_proc.kill()
+				pool_proc.join()
+				self.pool_array.remove(pool_data)
+				if self.ws_debug:
+					self.ws_debug.put(WSDebug.denounce(pool_id, {
+						'cmd_id': 'thread_pool.remove',
+						'data': {
+							'acceptor_id': self.acceptor_id,
+							'pool_id': pool_id,
+						},
+					}))
+			except Exception as e:
+				print_exception_framed(e)
 
 	def find_free_pool(self):
 		tgt_pool = None
@@ -1616,6 +1636,8 @@ class MPSocketAcceptor(NamedPrint, WSDebugMessaging):
 		return False
 
 	def run(self):
+		threading.Thread(target=self.joiner).start()
+
 		while True:
 			cl_con, cl_addr = self.listen_skt.accept()
 			self.nprint('Accepted connection:', cl_con, cl_addr)
