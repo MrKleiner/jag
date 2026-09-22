@@ -1,16 +1,10 @@
 import socket
 import queue
-import secrets
 import threading
-import multiprocessing
-import random
-import uuid
 import time
 import sys
 
 from pathlib import Path
-from multiprocessing.connection import Listener as MPListener
-from multiprocessing.connection import Client as MPClient
 from concurrent.futures import ThreadPoolExecutor
 
 from .jag_util import (
@@ -21,6 +15,9 @@ from .jag_util import (
 	ClassDict,
 	FasterTimerSched,
 )
+
+from .jag_h1 import JagSession
+from .jag_ws import MinWSession
 
 
 THISDIR = Path(__file__).parent
@@ -142,7 +139,7 @@ class WSDebug(NamedPrint):
 
 	def ws_listen(self):
 		# important todo: this is fucking stupid
-		from .min_wss import MinWSession
+		# from .jag_ws import MinWSession
 
 		while True:
 			try:
@@ -171,7 +168,7 @@ class WSDebug(NamedPrint):
 
 	def serve_page(self):
 		# important todo: this is fucking stupid
-		from .htservice import JagSession
+		# from .jag_h1 import JagSession
 
 		# Threads
 		thread_pool = ThreadPoolExecutor(max_workers=16)
@@ -190,7 +187,7 @@ class WSDebug(NamedPrint):
 		# Basic callback
 		def callback(req, reply):
 			reply.send_bytes(
-				(THISDIR / 'networking_debug.html')
+				(THISDIR / 'mp_debug.html')
 				.read_bytes()
 				.replace(
 					b'%WS_PORT%',
