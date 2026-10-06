@@ -713,7 +713,9 @@ class MPNetworking(NamedPrint, WSDebugMessaging):
 		skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		skt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		skt.bind(addr)
-		skt.listen(0)
+		skt.listen(
+			MPSocketAcceptor.DEFAULT_SKT_CON_HARD_LIMIT * 2
+		)
 
 		return skt
 
