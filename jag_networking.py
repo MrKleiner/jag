@@ -85,7 +85,7 @@ class WSDebugMessaging:
 
 
 # No, sockets absolutely should NOT be placed in a fucking sched or anything,
-# because that's basically a fucking limbo, which is unacceptable.
+# because that's basically a fucking limbo state, which is unacceptable.
 class MPSocketAcceptorThreadPool(LifeRemaining, NamedPrint, WSDebugMessaging):
 	DEFAULT_THREAD_AMOUNT = 16
 	DEFAULT_MAX_SESSIONS =  50
@@ -655,7 +655,7 @@ class MPNetworking(NamedPrint, WSDebugMessaging):
 
 		*args,
 
-		# How many persistent connection +acceptors to keep
+		# How many persistent connection acceptors to keep
 		acceptor_amount=None,
 
 		# Whether to make it so that all print statements from all the
@@ -697,13 +697,16 @@ class MPNetworking(NamedPrint, WSDebugMessaging):
 
 	@staticmethod
 	def logs_printer(sched):
-		while True:
+		retries = 0
+		while retries < 20:
 			try:
 				while True:
 					dbg_print(
 						sched.get()
 					)
+					retries = 0
 			except Exception as e:
+				retries += 1
 				dbg_print('KCAS FATAL:', str_exception(e))
 				time.sleep(0.1)
 
