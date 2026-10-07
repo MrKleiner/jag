@@ -9,9 +9,10 @@ from .jag_mimes import RSP_CODE_MAP
 
 
 RN_BYTES = b'\r\n'
-RN_STR = '\r\n'
+RN_STR =    '\r\n'
+
 HSEP_BYTES = b': '
-HSEP_STR = ': '
+HSEP_STR =    ': '
 
 B_KB = 1024
 B_MB = B_KB**2
@@ -207,8 +208,8 @@ class JagQuery(NamedPrint):
 		parsed_url = urllib.parse.urlparse(path)
 
 		jag_query.method = method
-
 		jag_query.path = urllib.parse.unquote(parsed_url.path)
+		jag_query.protocol = protocol
 
 		jag_query.prms = {
 			k:(''.join(v)) for (k, v)
@@ -331,6 +332,12 @@ class BasicBodyReader(NamedPrint):
 		self.skt_rfile = skt_rfile
 		self.size = size
 		self.prog = 0
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, e_type, e_val, e_trace):
+		return None
 
 	def read(self, cap=4096):
 		if (self.prog >= self.size) or (cap <= 0):
@@ -980,9 +987,9 @@ class JagSession(LifeRemaining, NamedPrint):
 
 			self.nprint(
 				'Got Request:',
-				# req.to_printable(),
+				'\n',
+				req.to_printable(),
 			)
-			# print(req.to_printable())
 
 			reply = self.spawn_reply()
 
