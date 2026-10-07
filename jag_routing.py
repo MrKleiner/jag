@@ -35,29 +35,39 @@ class JagRoute(NamedPrint):
 
 class JagRouter(NamedPrint):
 	def __init__(self, route_classes):
+		# Filter out everything that is not a class and not a child of JagRoute,
+		# so that it's possible to just pass globals().values()
 		self.route_classes = tuple(
-			(getattr(c, 'ROUTE_PATH', None), c) for c in route_classes
+			# (getattr(c, 'ROUTE_PATH', None), c) for c in route_classes
+			(c.ROUTE_PATH, c) for c in route_classes
 
 			if inspect.isclass(c)
 			and issubclass(c, JagRoute)
 		)
 
+		# Look for a 404 handler
 		self.handle_404 = None
 		for _, route_cls in self.route_classes:
-			if getattr(route_cls, 'HANDLE_404', False) == True:
+			if route_cls.HANDLE_404 == True:
 				self.handle_404 = route_cls
 
+		# Check whether wcmatch is required
 		for _, route_cls in self.route_classes:
-			if not route_cls.HANDLE_404 and not route_cls.USE_FNMATCH and not wsm_pathlib:
+			if (
+				    not route_cls.HANDLE_404
+				and not route_cls.USE_FNMATCH
+				and not wsm_pathlib
+			):
 				raise ImportError(
-					'wcmatch package not installed (pip install wcmatch)'
+					'wcmatch package required, but not installed '
+					'(pip install wcmatch)'
 				)
 
 	def __call__(self, req, rsp):
 		return self.match_request(req, rsp)
 
 	def match_request(self, req, rsp):
-		req_path = PurePath(req.query.path)
+		# req_path = PurePath(req.query.path)
 		callback_cls = None
 
 		for route_wildcard, route_cls in self.route_classes:
@@ -68,18 +78,26 @@ class JagRouter(NamedPrint):
 				callback_cls = route_cls
 				break
 
-			if route_cls.USE_FNMATCH and fnmatch(str(req_path), route_wildcard):
+			if route_cls.USE_FNMATCH and fnmatch(req.query.path, route_wildcard):
 				callback_cls = route_cls
 				break
 
-			if wsm_pathlib.PurePath(str(req_path)).globmatch(route_wildcard, flags=wsm_pathlib.GLOBSTAR):
+			if (
+				wsm_pathlib.PurePath(
+					req.query.path
+				)
+				.globmatch(
+					route_wildcard,
+					flags=wsm_pathlib.GLOBSTAR
+				)
+			):
 				callback_cls = route_cls
 				break
 		else:
 			callback_cls = self.handle_404
 
 		if callback_cls:
-			for hname, hval in (getattr(callback_cls, 'SET_HEADERS', None) or ()):
+			for hname, hval in (callback_cls.SET_HEADERS or ()):
 				rsp.headers[hname] = hval
 
 			callback_cls = callback_cls()
